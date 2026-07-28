@@ -17,7 +17,7 @@ const basicConfig = {
 	},
 	favicon: '/logo.jpg',
 	language: 'zh-CN',
-	timeEstablished: '2025-07-17',
+	timeEstablished: '2026-07-28',
 	timeZone: 'Asia/Shanghai',
 	url: 'http://localhost:3000/',
 	defaultCategory: '未分类',
