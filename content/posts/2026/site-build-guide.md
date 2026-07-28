@@ -122,8 +122,8 @@ pnpm new 文章标题
 ```yaml
 ---
 title: 文章标题              # 必填
-date: 2025-07-17            # 必填，格式 YYYY-MM-DD
-updated: 2025-07-18         # 可选，最后更新日期
+date: 2026-07-17            # 必填，格式 YYYY-MM-DD
+updated: 2026-07-18         # 可选，最后更新日期
 category: 技术              # 可选，分类名
 type: tech                  # 可选，tech=技术排版 / story=故事排版
 image: /封面图.jpg           # 可选，封面图片路径
@@ -199,7 +199,7 @@ image: /my-cover.jpg
   icon: 'https://example.com/favicon.ico',
   avatar: 'https://example.com/avatar.jpg',
   archs: ['Hexo', 'Vercel'],               // 框架和托管平台
-  date: '2025-07-17',                      // 添加日期
+  date: '2026-07-17',                      // 添加日期
   comment: '好友描述或备注',
 }
 ```
