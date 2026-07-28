@@ -19,7 +19,7 @@ const basicConfig = {
 	language: 'zh-CN',
 	timeEstablished: '2026-07-28',
 	timeZone: 'Asia/Shanghai',
-	url: 'http://localhost:3000/',
+	url: 'https://phosphorus.dpdns.org',
 	defaultCategory: '未分类',
 }
 

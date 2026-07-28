@@ -51,9 +51,9 @@ const basicConfig = {
   },
   favicon: '/logo.jpg',
   language: 'zh-CN',
-  timeEstablished: '2025-07-17',
+  timeEstablished: '2026-07-28',
   timeZone: 'Asia/Shanghai',
-  url: 'http://localhost:3000/',
+  url: 'https://phosphorus.dpdns.org',
 }
 ```
 
@@ -406,4 +406,4 @@ blog/main/
 
 ---
 
-> 博客搭建于 2025 年 7 月，基于 Clarity 主题。特别鸣谢 [纸鹿摸鱼处](https://blog.zhilu.site/)。
+> 博客搭建于 2026 年 7 月，基于 Clarity 主题。特别鸣谢 [纸鹿摸鱼处](https://blog.zhilu.site/)。
