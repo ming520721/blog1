@@ -67,8 +67,8 @@ const blogConfig = {
 
 	/** Twikoo 评论服务（后续部署时替换） */
 	twikoo: {
-		envId: 'https://your-twikoo.example.com/',
-		preload: 'https://your-twikoo.example.com/',
+		envId: 'https://twikoo-plum-delta.vercel.app/',
+		preload: 'https://twikoo-plum-delta.vercel.app/',
 	},
 }
 
