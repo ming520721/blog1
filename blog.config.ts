@@ -59,8 +59,8 @@ const blogConfig = {
 
 	/** 向 <head> 中添加脚本 */
 	scripts: [
-		// Umami 统计（后续部署时替换为自己的 Umami 服务地址）
-		// { 'src': 'https://your-umami.example.com/umami.js', 'data-website-id': 'your-website-id', 'defer': true },
+		// Umami 统计
+		{ src: 'https://cloud.umami.is/script.js', 'data-website-id': '800e3fe8-fda3-4c7e-a22a-f39715aa309f', defer: true },
 		// Twikoo 评论系统
 		{ src: 'https://cdnjs.snrat.com/ajax/libs/twikoo/1.7.13/twikoo.min.js', defer: true },
 	],
