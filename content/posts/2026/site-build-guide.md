@@ -49,7 +49,7 @@ const basicConfig = {
     email: 'smshnsj@163.com',
     homepage: 'https://github.com/ming520721',
   },
-  favicon: '/logo.jpg',
+  favicon: '/logo.png',
   language: 'zh-CN',
   timeEstablished: '2026-07-28',
   timeZone: 'Asia/Shanghai',

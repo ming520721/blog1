@@ -21,7 +21,7 @@
   ],
   "redirects": [
     {
-      "destination": "/logo.jpg",
+      "destination": "/logo.png",
       "source": "/favicon.ico",
       "status": 308
     }
