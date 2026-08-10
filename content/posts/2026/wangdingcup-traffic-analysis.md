@@ -209,9 +209,14 @@ AES key: e5e3529feb5d925b
 
 ### Q4：找到 Flag
 
-解密完所有请求和响应的数据后，按数据量从小到大排序，数据量最少的那一条请求中，`msg` 字段包含了一段 Base64 编码的字符串。
+解密完所有请求和响应的数据后，按数据量从小到大排序，数据量最少的那一条请求中提取出如下 Base64 数据：
 
-对该字符串进行 Base64 解码，得到最终的 flag。
+```
+mAUYLzmqn5SQPDkyI51vSp6DmrC24FW39Y4Ys3hUqS7Y9kjdZmEMYmOeeAOK3Jrwc
+ArYL/0aeFzYpI0VfNPDOj3+ASwFs23uydZCBSuDZ451F9P0uIdVS/prgGsObPkze
+```
+
+对该数据进行 AES 解密后，即可得到最终的 flag。
 
 > 具体的解密脚本这里就不贴了，网上有很多现成的冰蝎解密工具可以直接用。
 
