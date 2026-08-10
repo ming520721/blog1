@@ -218,7 +218,7 @@ ArYL/0aeFzYpI0VfNPDOj3+ASwFs23uydZCBSuDZ451F9P0uIdVS/prgGsObPkze
 
 对该数据进行 AES 解密后，即可得到最终的 flag。
 
-> 具体的解密脚本这里就不贴了，网上有很多现成的冰蝎解密工具可以直接用。
+> 冰蝎解密工具可以在 [CTF-NetA](https://github.com/Arinue/CTF-NetA) 下载，配合默认密码爆破即可快速解密。
 
 ---
 
