@@ -1,11 +1,46 @@
 ---
-title: 网鼎杯流量分析两道题WP
+title: 网鼎杯第五周流量分析两道题WP
 date: 2026-08-10
 category: 安全
 type: tech
+description: 网鼎杯流量分析，也是参考了NSSCTF上大佬的WP才做出来（
 ---
 
-最近接触了两道网鼎杯的流量分析题目，一道是 4G 核心网信令分析，另一道是冰蝎 Webshell 加密流量解密。做完之后觉得挺有意思的，记录一下解题过程。
+网鼎杯第五周布置的两道流量分析题，一道是 4G 核心网信令分析，另一道是冰蝎 Webshell 加密流量解密。做第一道的时候完全没头绪，后面去 NSSCTF 翻了翻大佬们的 WP 才搞明白这玩意儿是啥（
+
+---
+
+## 一些前置知识
+
+在开始之前，先补充一点可能需要了解的背景知识，方便后面理解。
+
+### 4G LTE 核心网架构
+
+4G 核心网（EPC，演进分组核心网）由几个关键网元组成：
+
+| 网元 | 全称 | 作用 |
+|------|------|------|
+| MME | Mobility Management Entity | 移动性管理，处理用户位置更新、鉴权等 |
+| S-GW | Serving Gateway | 服务网关，路由用户数据 |
+| P-GW | PDN Gateway | PDN 网关，连接外网 |
+| HSS | Home Subscriber Server | 归属用户服务器，存储用户签约信息 |
+| eNB | eNodeB | 4G 基站 |
+
+核心网中几大通信协议：
+
+| 协议 | 接口 | 传输层 | 用途 |
+|------|------|--------|------|
+| S1AP | S1-MME | SCTP | eNB 与 MME 之间的控制面信令 |
+| GTPv2-C | S11/S5 | UDP(2123) | MME 与 S-GW 之间的隧道管理 |
+| Diameter | S6a | SCTP | MME 与 HSS 之间的用户信息查询 |
+
+### 冰蝎 Behinder
+
+冰蝎（Behinder）是一款常见的 Webshell 管理工具，最新版本 v4.0 使用 AES 加密通信流量。它的特征是：
+- 请求 URL 通常包含 `/bx4.0/aes.php` 或类似路径
+- 通信内容经过 AES-128-CBC 加密后，再进行 Base64 编码
+- 默认连接密码为 `rebeyond`，密钥通过 MD5 派生
+- 需要爆破或已知密码才能解密流量内容
 
 ---
 
@@ -13,28 +48,50 @@ type: tech
 
 ### 题目描述
 
-某单位网络遭到非法攻击，安全人员对流量调查取证之后保存了关键证据，发现人员的定位信息存在泄露，请对其进行分析。flag 为用户位置信息进行 32 位 MD5 哈希值。
+> 某单位网络遭到非法的攻击，安全人员对流量调查取证之后保存了关键证据，发现人员的定位信息存在泄露，请对其进行分析。flag 为用户位置信息进行 32 位 MD5 哈希值。
 
-入手文件 `MME.cap`，共 141 个数据包。
+到手一个 `MME.cap`，共 141 个数据包。
 
-### 分析过程
+### Q1：识别流量中的协议类型
 
-用 Wireshark 打开流量包，一眼看到大量 SCTP 和 GTPv2 协议的数据包。SCTP 通信双方为 `1.1.1.1` 和 `2.2.2.2`（S1AP 信令），GTP-C 通信双方为 `14.66.12.4` 和 `14.66.50.4`（端口 2123）。这是典型的 4G/LTE EPC（演进分组核心网）架构通信流量。
+用 Wireshark 打开，一眼看到大量的 SCTP 和 GTPv2 流量。统计一下协议分布：
 
-从 SCTP 的 S1AP 消息中可以看到可读的字符串信息，提取到：
+- SCTP 协议（132 协议号）：119 个包，通信双方 `1.1.1.1` ↔ `2.2.2.2`
+- UDP 协议：22 个包，通信双方 `14.66.12.4` ↔ `14.66.50.4`（端口 2123）
+
+SCTP 承载的是 **S1AP** 信令（eNB 和 MME 之间的控制面），UDP 端口 2123 是 **GTP-C**（GPRS 隧道协议控制面）。这些组合明确告诉我们：这是一个 **4G LTE EPC 核心网**的流量包。
+
+再往下翻，还能看到 **Diameter** 协议（S6a 接口，用于 MME 和 HSS 之间的通信）。
+
+从 SCTP 的 S1AP 消息中能看到一些可读的明文字符串：
 
 ```
 mmec60.mmegi0361.mme.epc.mnc008.mcc460.3gppnetwork.org
 ```
 
-- **MCC** = 460（中国）
-- **MNC** = 008（中国移动）
-- **MMEGI** = 0361（MME 组标识）
-- **MMEC** = 60（MME 码）
+拆解一下这个字符串：
 
-题目要求找出用户的物理位置信息。在 4G 网络中，**ECGI（E-UTRAN 小区全局标识符）** 用于在全球范围内唯一标识一个基站的特定扇区（小区）。通过基站数据库就能查出该基站的精确经纬度，从而确定连接该基站的用户位置。
+| 字段 | 值 | 含义 |
+|------|-----|------|
+| MCC | 460 | 移动国家码，460 = 中国 |
+| MNC | 008 | 移动网络码，008 = 中国移动 |
+| MMEGI | 0361 | MME 组标识 |
+| MMEC | 60 | MME 码 |
 
-流量中同时包含 Diameter 协议（S6a 接口），主要用于 MME 与 HSS 之间的信令交互。在 Diameter 层中定位到 **EPS-Location-Information** AVP（AVP Code: 1496），展开后找到关键的 **E-UTRAN-Cell-Global-Identity**（AVP Code: 1602）：
+### Q2：找到用户的位置信息
+
+题目说要找"人员的定位信息"。在 4G 网络的信令中，用户位置通过 **ECGI（E-UTRAN 小区全局标识符）** 来标识。ECGI 在全球范围内唯一标识一个基站的特定扇区，通过基站数据库就能查出该基站的经纬度，也就确定了连接该基站的用户的位置。
+
+所以我们需要在这个流量包里找到 ECGI 的值。
+
+ECGI 在多个协议层都会出现：
+- **S1AP** 的 Initial UE Message 中包含 TAI（跟踪区标识）和 E-UTRAN CGI
+- **GTPv2-C** 的 Create Session Request 中包含 ULI（用户位置信息）
+- **Diameter** 的 Update Location Request 中包含 EPS-Location-Information
+
+这里最清晰的是 **Diameter 层的 EPS-Location-Information** AVP。
+
+在 Wireshark 中过滤 Diameter 协议，展开找到 AVP Code 1496（EPS-Location-Information），再一层层展开到 AVP Code 1602（E-UTRAN-Cell-Global-Identity）：
 
 ```
 AVP Code: 1496 EPS-Location-Information
@@ -44,6 +101,7 @@ AVP Code: 1496 EPS-Location-Information
   EPS-Location-Information
       MME-Location-Information
           AVP Code: 1600 MME-Location-Information
+          AVP Length: 68
           MME-Location-Information
               E-UTRAN-Cell-Global-Identity: 0ddb88fbbcca4f
                   AVP Code: 1602 E-UTRAN-Cell-Global-Identity
@@ -52,9 +110,11 @@ AVP Code: 1496 EPS-Location-Information
               Age-Of-Location-Information: 1
 ```
 
-ECGI 值为 `0ddb88fbbcca4f`。
+ECGI 值就是 `0ddb88fbbcca4f`。同时也能看到 TAI 为 `64f08099f4`，拆开就是 TAC=0x64f0（25840）加上 PLMN 信息。
 
-按照题目要求，对该值进行 32 位 MD5 哈希：
+### Q3：计算 Flag
+
+题目要求对这个位置信息进行 32 位 MD5 哈希：
 
 ```bash
 echo -n "0ddb88fbbcca4f" | md5sum
@@ -63,72 +123,108 @@ echo -n "0ddb88fbbcca4f" | md5sum
 
 得到 flag。
 
+> 这道题参考了 NSSCTF 上大佬的 WP，第一次接触蜂窝网络信令分析，一开始完全找不到方向，后来才知道要去 Diameter 层找 ECGI。
+
 ---
 
 ## 题目二：冰蝎加密流量分析
 
 ### 题目描述
 
-在一次网络安全的挑战中，截获了一段神秘的冰蝎流量，据说这段流量中隐藏着重要的信息。找出隐藏在流量中的秘密。
+> 在一次网络安全的挑战中，你截获了一段神秘的冰蝎流量。据说这段流量中隐藏着重要的信息。你能解开这个谜团，找出隐藏在流量中的秘密吗？
 
-入手文件 `bx.pcapng`。
+到手一个 `bx.pcapng`。
 
-### 分析过程
+### Q1：修复损坏的 pcapng 文件
 
-#### 文件修复
-
-用 Wireshark 或 scapy 尝试打开 pcapng 文件时发现报错，SHB（Section Header Block）的字节序魔数异常。用 010 Editor 查看文件头：
+用 Wireshark 打开时直接报错，用 010 Editor 看十六进制：
 
 ```
 0000h: 0A 0D 0D 0A 70 00 00 00 4D 3C 4A 01 00 00 00 FF
 ```
 
-正常的 pcapng 字节序魔数应为 `1A 2B 3C 4D`（大端），文件中存储为 `4D 3C 4A 01`。经比对，此处的 `4A 01` 为错误字节，应修正为 `2B 1A`：
+pcapng 文件的 Section Header Block 结构：
+
+| 偏移 | 大小 | 字段 | 正常值 |
+|------|------|------|--------|
+| 0x00 | 4 | Block Type | 0A 0D 0D 0A |
+| 0x04 | 4 | Block Length | 可变 |
+| 0x08 | 4 | Byte-Order Magic | 1A 2B 3C 4D（大端） |
+
+文件中 0x08 处的字节序魔数为 `4D 3C 4A 01`，其中 `4A 01` 是损坏的部分，应该是 `2B 1A`。更正后：
 
 ```
 0000h: 0A 0D 0D 0A 70 00 00 00 4D 3C 2B 1A 01 00 00 00
 ```
 
-保存后即可正常解析。
+保存为 `bx_fix.pcapng`，Wireshark 正常打开。
 
-#### 协议识别
+### Q2：识别冰蝎流量
 
-修复后用 Wireshark 打开，过滤出 HTTP 流量。看到多个对 `/bx4.0/aes.php` 的 POST 请求，请求体为类 Base64 的长字符串。`bx4.0` 是冰蝎（Behinder）v4.0 版本的标志，`aes.php` 表示使用 AES 加密模式。
+过滤 HTTP 协议，看到几个 POST 请求：
 
-流量特征：
-- 请求 URI：`/bx4.0/aes.php`
-- Content-Type：`application/x-www-form-urlencoded`
-- User-Agent：`Mozilla/5.0 (Windows NT 10.0) ... Chrome/84.0.4147.125`
-- 通信目标：`127.0.0.1`
+```
+POST /bx4.0/aes.php HTTP/1.1
+Host: 127.0.0.1
+Content-type: application/x-www-form-urlencoded
+User-Agent: Mozilla/5.0 (Windows NT 10.0) ... Chrome/84.0.4147.125
+Content-Length: 3800
+```
 
-三个不同长度的请求体：
-- 请求 1：3800 字节
-- 请求 2：6380 字节
-- 请求 3：4204 字节
+请求路径 `/bx4.0/aes.php` 暴露了身份——**bx** 就是冰蝎，**4.0** 是版本号，**aes.php** 表示使用 AES 加密传输。
 
-#### 密钥爆破
+抓到的请求体都是长这样的 Base64 密文（截取前几十个字符）：
 
-冰蝎 v4.0 使用 AES-128-CBC 加密通信内容，密钥由密码通过 MD5 派生。使用冰蝎爆破工具尝试默认密码，成功找到密码为 `rebeyond`，派生 AES 密钥为 `e5e3529feb5d925b`。
+```
+m7nCS8n4OZG9akdDlxm6OdJevs/jYQ5/IcXK/BRdpcFv7f8imFFv...
+```
 
-解密后得到冰蝎与 WebShell 之间的 JSON 格式通信内容，包含命令执行结果等信息。
+一共有三组不同长度的 POST 请求（去重后）：
 
-#### 获取 Flag
+| 编号 | Content-Length | 
+|------|---------------|
+| 1 | 3800 |
+| 2 | 6380 |
+| 3 | 4204 |
 
-解密所有通信数据后，找到数据量最小的一条记录，其中的 `msg` 字段包含 Base64 编码的字符串。对该字符串进行 Base64 解码即可得到 flag。
+### Q3：爆破加密密钥
 
-> 本题参考了 NSSCTF 上相关 WP 的解题思路，在此表示感谢。
+冰蝎 v4.0 的加密方案是：
+
+1. 客户端用密码 → MD5 → 取前 16 字符作为 AES 密钥
+2. JSON 数据 → AES-128-CBC 加密（随机 IV）
+3. IV + 密文 → Base64 编码 → HTTP POST Body
+
+所以解密需要知道密码。直接拿冰蝎爆破工具跑默认密码字典，很快就命中：
+
+```
+Find Password: rebeyond
+AES key: e5e3529feb5d925b
+```
+
+冰蝎的默认密码就是 `rebeyond`，大部分人不会改（
+
+解密后的通信内容是 JSON 格式，包含了冰蝎与 WebShell 之间的命令交互、执行结果等。
+
+### Q4：找到 Flag
+
+解密完所有请求和响应的数据后，按数据量从小到大排序，数据量最少的那一条请求中，`msg` 字段包含了一段 Base64 编码的字符串。
+
+对该字符串进行 Base64 解码，得到最终的 flag。
+
+> 爆破和 flag 提取的部分参考了 NSSCTF 上的 WP，这里就不再赘述具体的解密脚本细节了。
 
 ---
 
 ## 总结
 
-两道题目覆盖了不同的流量分析方向：
+两道题目练下来，感觉流量分析这个方向最考验的是两点：一是**对网络协议的熟悉程度**，二是**耐心**。
 
-1. **第一题**考察对移动通信核心网协议（S1AP / Diameter / GTPv2）的理解，关键是在大量的信令交互中找到承载用户位置信息的 ECGI 字段。Wireshark 的协议解析树是关键工具。
+第一题如果不知道 4G 核心网的协议栈和 ECGI 的概念，拿到 pcap 文件真的是一脸懵。但一旦知道了 Diameter AVP 1602 这个关键字段，定位 flag 就是几秒钟的事。
 
-2. **第二题**是经典的 Webshell 加密流量分析，需要识别冰蝎的流量特征、修复损坏的 pcap 文件、爆破加密密钥，最后解密提取隐藏信息。
+第二题的冰蝎加密流量相对来说更"常规"一些，修文件头→识别特征→爆破密钥→解密提取，套路比较固定。但文件头的修复这一步如果没有经验，可能也会卡很久。
 
-两道题做完，对蜂窝网络信令分析和 Webshell 流量取证都有了更深的理解。
+两道题都参考了 NSSCTF 上的 WP，感谢大佬们的无私分享（
 
 ---
 
