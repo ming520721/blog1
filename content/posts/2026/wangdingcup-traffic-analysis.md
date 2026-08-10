@@ -4,6 +4,7 @@ date: 2026-08-10
 category: 安全
 type: tech
 description: 网鼎杯流量分析，两道题分别是 4G 核心网信令分析和冰蝎加密流量解密
+image: /wangdingcup-cover.jpg
 ---
 
 网鼎杯第五周布置的两道流量分析题，一道是 4G 核心网信令分析，另一道是冰蝎 Webshell 加密流量解密。做第一道的时候完全没头绪，去查了查资料才搞明白这玩意儿是啥（
