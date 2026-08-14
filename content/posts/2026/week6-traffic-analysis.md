@@ -66,17 +66,10 @@ print(bytes(low))
 跑出来结果是：
 
 ```
-hex  : 000069226865726520697320796f757220666c6167203a205333637233743467336e74
-ascii: here is your flag : S3cr3t4g3nt
+hex  : 000069226865726520697320796f7572...
 ```
 
-前两个包的 `ip.id = 0x0000` 是填充，第 3 个包是混进来的 echo-reply（`ICMP type=0`）干扰包。去掉这些，真正的明文就是 **`here is your flag : S3cr3t4g3nt`**。
-
-按平台格式提交：
-
-```
-NSSCTF{S3cr3t4g3nt}
-```
+前两个包的 `ip.id = 0x0000` 是填充，第 3 个包是混进来的 echo-reply（`ICMP type=0`）干扰包。去掉这些干扰，把剩下的低字节拼起来就是题目要的明文。
 
 这道题本身不难，但它提醒了一点：**流量隐写不一定藏在 payload 里，协议头部那些"看起来没用"的字段一样可以藏数据**。除了 `ip.id`，常见的还有 `tcp.urgent_pointer`、`tcp.seq/ack`、`dns.qry.name` 这些。
 
@@ -84,7 +77,7 @@ NSSCTF{S3cr3t4g3nt}
 
 ## 题目二：DNS 外带 + 加密压缩包 + QR 掩码
 
-这道题完整走了一遍攻击链，信息量比第一道大得多。题目描述说"某内网主机被怀疑通过 DNS 流量悄悄送出了一份文件"，要我们还原被外带的数据并找到机密信息，flag 格式是 `GCCCTF`。
+这道题完整走了一遍攻击链，信息量比第一道大得多。题目描述说"某内网主机被怀疑通过 DNS 流量悄悄送出了一份文件"，要我们还原被外带的数据并找到里面的机密信息。
 
 ### 整体思路
 
@@ -92,7 +85,7 @@ NSSCTF{S3cr3t4g3nt}
 
 1. 从 pcap 里把 DNS 外带的数据拼回来，还原出一个**加密的 zip**；
 2. 破解 ZipCrypto 加密，解压出一张二维码图片和一份 QR 标准 PDF；
-3. 二维码被额外的 Mask 3 扰乱，按 `(i+j)%3==0` 对数据模块做异或恢复，解码出 flag。
+3. 二维码被额外的 Mask 3 扰乱，按 `(i+j)%3==0` 对数据模块做异或恢复，解码出结果。
 
 下面逐步拆解。
 
@@ -144,7 +137,7 @@ dns.flags.response == 0 && ip.dst == 8.8.8.8 && dns.qry.name contains "google"
 
 #### ZIP 传统加密原理
 
-ZIP 的加密标志在文件头的 `flag` 字段，bit0 表示加密。本题两个文件的 flag 都是 `0x0009`：
+ZIP 的加密标志在文件头的 flags 字段，bit0 表示加密。本题两个文件的 flags 都是 `0x0009`：
 
 ```
 0x0001 = encrypted（加密）
@@ -165,8 +158,8 @@ for c in password:
 
 **坑点在于 check byte 的取值规则：**
 
-- 如果 flag 的 bit3 **未设置**：check byte = CRC32 的**最高字节**；
-- 如果 flag 的 bit3 **已设置**（有 data descriptor）：check byte = **修改时间（mod time）的最高字节**。
+- 如果 flags 的 bit3 **未设置**：check byte = CRC32 的**最高字节**；
+- 如果 flags 的 bit3 **已设置**（有 data descriptor）：check byte = **修改时间（mod time）的最高字节**。
 
 本题 bit3 置位了，所以校验时要用 mod time 高位，而不是 CRC 高位。用错规则会误判成"密码错误"。
 
@@ -249,7 +242,7 @@ for i in range(N):
             m[i, j] = 255 - m[i, j]   # 异或反转
 ```
 
-处理完放大交给 pyzbar 解码，直接出 flag。
+处理完放大交给 pyzbar 解码，直接得到结果。
 
 ---
 
@@ -259,12 +252,5 @@ for i in range(N):
 
 1. **隐写不一定在 payload 里**：`ip.id` 这种协议头字段一样能藏数据。
 2. **DNS 外带还原的关键是分清通道**：发往哪个 DNS 服务器、qname 后缀是什么，过滤错了数据就拼不起来。
-3. **ZipCrypto 是流密码**，check byte 的取值规则跟 flag 的 data descriptor 位有关。
+3. **ZipCrypto 是流密码**，check byte 的取值规则跟文件头 flags 的 data descriptor 位有关。
 4. **QR 的 mask 只作用于数据模块**：功能图形不能碰，否则解码器直接找不到码。
-
-最终 flag：
-
-```
-题一：NSSCTF{S3cr3t4g3nt}
-题二：GCCCTF{75d26fb4-c1d7-4865-aea2-529587e4a38c}
-```
