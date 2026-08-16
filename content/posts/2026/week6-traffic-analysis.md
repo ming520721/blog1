@@ -1,5 +1,5 @@
 ---
-title: 考核第六周·流量分析两道题WP
+title: 流量分析两道题WP
 date: 2026-08-14
 category: 安全
 type: tech
