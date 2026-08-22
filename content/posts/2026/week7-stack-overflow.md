@@ -3,11 +3,11 @@ title: 栈溢出几道题
 date: 2026-08-22
 category: 安全
 type: tech
-description: 第七周考核三道栈溢出题：覆盖变量触发后门、静态链接的 ret2syscall，以及 canary+PIE 下的两段式 ret2libc
+description: 三道栈溢出题：覆盖变量触发后门、静态链接的 ret2syscall，以及 canary+PIE 下的两段式 ret2libc
 image: /week7-stack-overflow-cover.jpg
 ---
 
-这周考核的是三道栈溢出题，难度是递进的。第一道只需要覆盖一个局部变量就能触发后门，第二道是 32 位静态链接的 ret2syscall，第三道就上了 canary 和 PIE，还得先预测随机数、再泄露地址、最后两段式 ret2libc。三道题正好把"栈溢出"这条线的几个关键点都串起来了，记录一下。
+这次的三道栈溢出题，难度是递进的。第一道只需要覆盖一个局部变量就能触发后门，第二道是 32 位静态链接的 ret2syscall，第三道就上了 canary 和 PIE，还得先预测随机数、再泄露地址、最后两段式 ret2libc。三道题正好把"栈溢出"这条线的几个关键点都串起来了，记录一下。
 
 复现链接：
 
