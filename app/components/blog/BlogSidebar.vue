@@ -133,7 +133,7 @@ const debouncedSelection = refDebounced(text)
 }
 
 .search-btn {
-	opacity: 0.5;
+	opacity: 0.7;
 	margin: 1rem 0;
 	outline: 2px solid var(--c-border);
 	outline-offset: -2px;

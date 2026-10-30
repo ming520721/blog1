@@ -61,7 +61,7 @@ defineExpose({ body })
 	}
 
 	&.dim {
-		opacity: 0.3;
+		opacity: 0.7;
 		transition: opacity 0.2s;
 
 		#blog-aside:hover &,

@@ -80,6 +80,7 @@ const showAllDate = isTimeDiffSignificant(props.date, props.updated)
 .article-title {
 	font-size: 1.2em;
 	color: var(--c-text);
+	text-wrap: balance;
 }
 
 .article-description {

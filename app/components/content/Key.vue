@@ -149,7 +149,7 @@ kbd {
 	font-family: var(--font-basic);
 	font-size: 0.9em;
 	line-height: 1.4;
-	color: var(--c-text-2);
+	color: var(--c-text-1);
 	transition: all 0.1s;
 	user-select: none;
 

@@ -51,7 +51,7 @@ const mainDate = computed(() => props.useUpdated ? props.updated : props.date)
 	}
 
 	.dim-hover {
-		opacity: 0.4;
+		opacity: 0.65;
 		transition: opacity 0.2s;
 	}
 

@@ -106,7 +106,7 @@ if (props.avoid) {
 
 		&.active {
 			background-color: var(--c-primary-soft);
-			color: var(--c-primary);
+			color: var(--c-text);
 		}
 	}
 }

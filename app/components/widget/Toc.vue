@@ -82,10 +82,15 @@ ol {
 }
 
 li {
-	opacity: 0.6;
+	opacity: 0.72;
 	font-size: 0.94em;
 	color: var(--c-text);
 	transition: opacity 0.2s;
+
+	// 嵌套层级不再叠加透明度：父级 opacity 已整体压暗，子级再压会叠加成不可读
+	li {
+		opacity: 0.88;
+	}
 
 	&:hover {
 		opacity: 0.94;
